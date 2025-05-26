@@ -365,7 +365,9 @@ def main():
     # if not.
     logging.basicConfig(level=logging.WARNING) # Set a default level
 
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
     parser.add_argument(
         "--model",
         default=MODEL_NAME,
