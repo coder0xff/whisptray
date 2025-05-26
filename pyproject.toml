@@ -47,3 +47,4 @@ module = [
     "speech_recognition",
     "whisper"
 ]
+ignore_missing_imports = true

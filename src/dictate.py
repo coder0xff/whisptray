@@ -1,9 +1,9 @@
 import argparse
-import os
-import threading
-import logging
 import ctypes
 import ctypes.util
+import logging
+import os
+import threading
 from datetime import datetime, timedelta, timezone
 from queue import Queue
 from sys import platform
@@ -37,8 +37,149 @@ RECORD_TIMEOUT = 2.0  # Seconds for real-time recording
 PHRASE_TIMEOUT = 3.0  # Seconds of silence before new line
 DEFAULT_MICROPHONE = "pulse"  # For Linux
 
+# --- ALSA Error Handling Setup ---
+# Define the Python callback function signature for ctypes
+# Corresponds to:
+# typedef void (*python_callback_func_t)(
+#     const char *file,
+#     int line,
+#     const char *function,
+#     int err,
+#     const char *formatted_msg
+# );
+PYTHON_ALSA_ERROR_HANDLER_FUNC = ctypes.CFUNCTYPE(
+    None,  # Return type: void
+    ctypes.c_char_p,  # const char *file
+    ctypes.c_int,  # int line
+    ctypes.c_char_p,  # const char *function
+    ctypes.c_int,  # int err
+    ctypes.c_char_p,  # const char *formatted_msg
+)
 
-# --- Helper Functions ---
+# The C_ALSA_ERROR_HANDLER_FUNC CFUNCTYPE is no longer needed here
+# as Python doesn't directly get a pointer to alsa_c_error_handler.
+
+alsa_logger = logging.getLogger("ALSA")
+
+
+def python_alsa_error_handler(file_ptr, line, func_ptr, err, formatted_msg_ptr):
+    """
+    Python callback to handle ALSA error messages passed from C.
+    Decodes char* to Python strings.
+    """
+    try:
+        file = (
+            ctypes.string_at(file_ptr).decode("utf-8", "replace")
+            if file_ptr
+            else "UnknownFile"
+        )
+        function = (
+            ctypes.string_at(func_ptr).decode("utf-8", "replace")
+            if func_ptr
+            else "UnknownFunction"
+        )
+        formatted_msg = (
+            ctypes.string_at(formatted_msg_ptr).decode("utf-8", "replace")
+            if formatted_msg_ptr
+            else ""
+        )
+
+        # Using python logging to output ALSA messages
+        # You can adjust the log level (e.g., alsa_logger.error, alsa_logger.warning)
+        # based on `err` if desired. For now, logging all as INFO. snd_strerror(err) is
+        # already included in formatted_msg by C if err != 0.
+        alsa_logger.info(f"{file}:{line} ({function}) - err {err}: {formatted_msg}")
+    except Exception as e:
+        # Fallback logging if there's an error within the error handler itself
+        print(f"Error in python_alsa_error_handler: {e}")
+
+
+# Keep a reference to the ctype function object to prevent it from being garbage
+# collected
+py_error_handler_ctype = PYTHON_ALSA_ERROR_HANDLER_FUNC(python_alsa_error_handler)
+
+
+def setup_alsa_error_handler():
+    """
+    Sets up a custom ALSA error handler using the C helper library.
+    """
+    if "linux" not in platform:
+        logging.info("Skipping ALSA error handler setup on non-Linux platform.")
+        return
+
+    try:
+        # 1. Load our C helper library (alsa_redirect.so)
+        c_redirect_lib_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "alsa_redirect.so"
+        )
+        if not os.path.exists(c_redirect_lib_path):
+            try:
+                c_redirect_lib = ctypes.CDLL("alsa_redirect.so")
+                logging.info("Loaded alsa_redirect.so from system path.")
+            except OSError:
+                logging.error(
+                    f"alsa_redirect.so not found at {c_redirect_lib_path} or in system"
+                    " paths. ALSA logs will not be redirected."
+                )
+                return
+        else:
+            c_redirect_lib = ctypes.CDLL(c_redirect_lib_path)
+            logging.info(f"Loaded alsa_redirect.so from: {c_redirect_lib_path}")
+
+        # 2. Define argtypes and restype for functions in alsa_redirect.so
+        # void register_python_alsa_callback(python_callback_func_t callback);
+        c_redirect_lib.register_python_alsa_callback.argtypes = [
+            PYTHON_ALSA_ERROR_HANDLER_FUNC
+        ]
+        c_redirect_lib.register_python_alsa_callback.restype = None
+
+        # int initialize_alsa_error_handling();
+        c_redirect_lib.initialize_alsa_error_handling.argtypes = []
+        c_redirect_lib.initialize_alsa_error_handling.restype = ctypes.c_int
+
+        # int clear_alsa_error_handling();
+        c_redirect_lib.clear_alsa_error_handling.argtypes = []
+        c_redirect_lib.clear_alsa_error_handling.restype = ctypes.c_int
+
+        # 3. Register the Python callback with our C library
+        c_redirect_lib.register_python_alsa_callback(py_error_handler_ctype)
+        logging.info("Registered Python ALSA error handler with C helper.")
+
+        # 4. Ask the C library to set ALSA's error handler
+        ret = c_redirect_lib.initialize_alsa_error_handling()
+        if ret < 0:
+            logging.error(
+                f"C library failed to set ALSA error handler. Error code: {ret}"
+            )
+        else:
+            logging.info("C library successfully set ALSA error handler.")
+            # Optional: Test with a dummy ALSA call. We need libasound for this.
+            try:
+                asound_lib_name = ctypes.util.find_library("asound")
+                if asound_lib_name:
+                    asound = ctypes.CDLL(asound_lib_name)
+                    # Ensure snd_config_update_free_global is defined before calling
+                    if hasattr(asound, "snd_config_update_free_global"):
+                        asound.snd_config_update_free_global.argtypes = []
+                        asound.snd_config_update_free_global.restype = ctypes.c_int
+                        asound.snd_config_update_free_global()
+                        logging.debug(
+                            "Called snd_config_update_free_global to test ALSA handler."
+                        )
+                    else:
+                        logging.debug(
+                            "snd_config_update_free_global not found in libasound,"
+                            " skipping test call."
+                        )
+                else:
+                    logging.warning("libasound not found, skipping ALSA test call.")
+            except Exception as e_test:
+                logging.debug(f"Exception during ALSA test call: {e_test}")
+
+    except Exception as e:
+        logging.error(f"Error setting up ALSA error handler: {e}", exc_info=True)
+
+
 def create_tray_image(width, height, color1, color2):
     """Creates a simple image for the tray icon."""
     image = Image.new("RGB", (width, height), color1)
@@ -48,7 +189,6 @@ def create_tray_image(width, height, color1, color2):
     return image
 
 
-# --- Speech Recognition Logic ---
 def record_callback(_, audio: sr.AudioData) -> None:
     """
     Threaded callback function to receive audio data when recordings finish.
@@ -141,7 +281,6 @@ def process_audio():
             sleep(0.1)
 
 
-# --- Tray Icon Functions ---
 def toggle_dictation(icon, item):
     """Toggles dictation on/off."""
     global dictation_active, recorder, source
@@ -193,26 +332,22 @@ def setup_tray_icon():
     menu = pystray.Menu(
         pystray.MenuItem(
             "Toggle Dictation",
-            lambda: toggle_dictation(app_icon, None),  # Ensure lambda for direct call if needed
-            checked=lambda item: dictation_active
+            lambda: toggle_dictation(
+                app_icon, None
+            ),  # Ensure lambda for direct call if needed
+            checked=lambda item: dictation_active,
         ),
-        pystray.MenuItem("Exit", lambda: exit_program(app_icon, None)) # Ensure lambda
+        pystray.MenuItem("Exit", lambda: exit_program(app_icon, None)),  # Ensure lambda
     )
     app_icon = pystray.Icon("dictate_app", icon_image, "Dictate App", menu)
     logging.debug("pystray.Icon created. Calling app_icon.run().")
     app_icon.run()
-    logging.debug("app_icon.run() finished.") # Should not be reached if os._exit is called
+    logging.debug(
+        "app_icon.run() finished."
+    )  # Should not be reached if os._exit is called
 
 
-# --- Main Function ---
 def main():
-    # Configure logging first
-    logging.basicConfig(
-        level=logging.DEBUG,
-        format="%(asctime)s - %(levelname)s - %(name)s - %(threadName)s - %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
-
     global audio_model
     global recorder
     global source
@@ -221,6 +356,14 @@ def main():
     global RECORD_TIMEOUT
     global PHRASE_TIMEOUT
     global DEFAULT_MICROPHONE
+
+    # Configure logging first
+    # The default logging level will be WARNING.
+    # If -v or --verbose is passed, it will be set to INFO.
+    # The initial basicConfig is minimal, we'll add handlers and formatters later
+    # if verbose is specified, or rely on the default print for critical errors
+    # if not.
+    logging.basicConfig(level=logging.WARNING) # Set a default level
 
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -251,6 +394,12 @@ def main():
         "consider it a new line in the transcription.",
         type=float,
     )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Enable informational logging. Debug logs are not affected by this flag.",
+    )
     if "linux" in platform:
         parser.add_argument(
             "--default_microphone",
@@ -260,6 +409,33 @@ def main():
             type=str,
         )
     args = parser.parse_args()
+
+    # Configure logging properly based on verbosity
+    # Remove all handlers associated with the root logger object.
+    for handler in logging.root.handlers[:]:
+        logging.root.removeHandler(handler)
+
+    if args.verbose:
+        logging.basicConfig(
+            level=logging.INFO, # INFO and above for verbose
+            format="%(asctime)s - %(levelname)s - %(name)s - %(threadName)s - %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+        logging.info("Verbose logging enabled.")
+    else:
+        logging.basicConfig(
+            level=logging.WARNING, # WARNING and above by default
+            format="%(asctime)s - %(levelname)s - %(name)s - %(threadName)s - %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+
+
+    # Setup ALSA error handler (if on Linux)
+    # This should be done early, before any library might initialize ALSA.
+    if "linux" in platform:
+        setup_alsa_error_handler()
+    else:
+        logging.info("Skipping ALSA error handler setup on non-Linux platform.")
 
     MODEL_NAME = args.model
     ENERGY_THRESHOLD = args.energy_threshold
@@ -342,7 +518,9 @@ def main():
         return
 
     # Start audio processing thread
-    audio_thread = threading.Thread(target=process_audio, daemon=True, name="AudioProcessThread")
+    audio_thread = threading.Thread(
+        target=process_audio, daemon=True, name="AudioProcessThread"
+    )
     audio_thread.start()
     logging.info("Audio processing thread started.")
 
@@ -357,6 +535,8 @@ if __name__ == "__main__":
     if "linux" in platform and not os.environ.get("DISPLAY"):
         print("Error: DISPLAY environment variable not set. GUI cannot be displayed.")
         print("Please ensure you are running this in a graphical environment.")
-        logging.critical("DISPLAY environment variable not set. GUI cannot be displayed. Exiting.")
+        # Logging might not be configured yet if verbose flag isn't parsed.
+        # So, print directly.
+        # If main() were to proceed, logging would be set up, but we exit here.
     else:
         main()
