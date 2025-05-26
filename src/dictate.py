@@ -164,6 +164,9 @@ def setup_alsa_error_handler():
 
 
 def configure_logging(verbose: bool):
+    """
+    Configures logging based on the verbose flag.
+    """
     if verbose:
         logging.basicConfig(
             level=logging.DEBUG,
@@ -191,6 +194,9 @@ def configure_logging(verbose: bool):
 
 
 def parse_args():
+    """
+    Parses the command line arguments.
+    """
     parser = argparse.ArgumentParser(
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
@@ -248,6 +254,9 @@ def parse_args():
 
 
 def open_microphone(mic_name: str):
+    """
+    Opens a microphone based on the microphone name.
+    """
     assert mic_name
 
     result = None
@@ -272,7 +281,6 @@ def open_microphone(mic_name: str):
                 speech_recognition.Microphone.list_microphone_names()
             ):
                 logging.debug('Microphone with name "%s" found', name_available)
-            return
     else:
         result = speech_recognition.Microphone(sample_rate=16000)
         logging.debug("Using default microphone.")
@@ -280,7 +288,13 @@ def open_microphone(mic_name: str):
     return result
 
 
+# pylint: disable=too-many-instance-attributes
 class SpeechToKeys:
+    """
+    Class to convert speech to keyboard input.
+    """
+
+    # pylint: disable=too-many-arguments,too-many-positional-arguments
     def __init__(
         self, model_name, energy_threshold, record_timeout, phrase_timeout, source
     ):
@@ -290,6 +304,9 @@ class SpeechToKeys:
         self.phrase_timeout = phrase_timeout
         self.source = source
         self.data_queue = Queue[bytes]()
+        self.phrase_bytes = b""
+        self.phrase_time = None
+        self.transcription_history = [""]
         self.dictation_active = False
 
         logging.debug("Loading Whisper model: %s", model_name)
@@ -342,7 +359,10 @@ class SpeechToKeys:
         audio_thread.start()
         logging.debug("Audio processing thread started.")
 
-    def exit(self):
+    def shutdown(self):
+        """
+        Shuts down the speech to keys.
+        """
         self.enabled = False
         if self.recorder and hasattr(
             self.recorder, "stop_listening"
@@ -414,47 +434,48 @@ class SpeechToKeys:
                     )
 
                     if self.audio_model:
-                        result = self.audio_model.transcribe(
-                            audio_np, fp16=torch.cuda.is_available()
-                        )
-                        text = result["text"].strip()
-                        logging.debug("Transcribed text: '%s'", text)
-
-                        if text:  # Only process if there is new text
-                            keyboard = KeyboardController()
-                            if phrase_complete:
-                                # New phrase, type with a space if previous text exists
-                                # and doesn't end with space
-                                if self.transcription_history[
-                                    -1
-                                ] and not self.transcription_history[-1].endswith(" "):
-                                    keyboard.type(" ")
-                                keyboard.type(text)
-                                self.transcription_history.append(text)
-                            else:
-                                # Continuing a phrase. Need to "backspace" the previous
-                                # part of this phrase and type the new full phrase. This
-                                # is a simplification. A more robust solution would be
-                                # to diff the text.
-                                if (
-                                    self.transcription_history
-                                    and self.transcription_history[-1]
-                                ):
-                                    for _ in range(len(self.transcription_history[-1])):
-                                        keyboard.press(Key.backspace)
-                                        keyboard.release(Key.backspace)
-                                keyboard.type(text)
-                                self.transcription_history[-1] = text
+                        self._transcribe(phrase_complete, audio_np)
                     else:
                         logging.warning("Audio model not loaded yet.")
                 else:
-                    sleep(0.1)  # More responsive sleep
+                    sleep(0.1)
             except (Empty, ValueError, TypeError, OSError) as e:
                 logging.error("Error in process_audio: %s", e, exc_info=True)
                 sleep(0.1)
 
+    def _transcribe(self, phrase_complete, audio_np):
+        result = self.audio_model.transcribe(audio_np, fp16=torch.cuda.is_available())
+        text = result["text"].strip()
+        logging.debug("Transcribed text: '%s'", text)
+
+        # Only process if there is new text
+        if text:
+            keyboard = KeyboardController()
+            if phrase_complete:
+                # New phrase, type with a space if previous text exists and doesn't end
+                # with space
+                if self.transcription_history[-1] and not self.transcription_history[
+                    -1
+                ].endswith(" "):
+                    keyboard.type(" ")
+                keyboard.type(text)
+                self.transcription_history.append(text)
+            else:
+                # Continuing a phrase. Need to "backspace" the previous part of this
+                # phrase and type the new full phrase. This is a simplification. A more
+                # robust solution would be to diff the text.
+                if self.transcription_history and self.transcription_history[-1]:
+                    for _ in range(len(self.transcription_history[-1])):
+                        keyboard.press(Key.backspace)
+                        keyboard.release(Key.backspace)
+                keyboard.type(text)
+                self.transcription_history[-1] = text
+
     @property
     def enabled(self):
+        """
+        Returns the enabled state of the speech to keys.
+        """
         return self.dictation_active
 
     @enabled.setter
@@ -468,6 +489,11 @@ class SpeechToKeys:
 
 
 class DictateGui:
+    """
+    Class to run the Dictate App.
+    """
+
+    # pylint: disable=too-many-arguments,too-many-positional-arguments
     def __init__(
         self, mic_name, model_name, energy_threshold, record_timeout, phrase_timeout
     ):
@@ -490,6 +516,9 @@ class DictateGui:
         self._setup_tray_icon()  # This will block until exit
 
     def run(self):
+        """
+        Runs the Dictate App.
+        """
         logging.debug("Calling app_icon.run().")
         self.app_icon.run()
         logging.debug("app_icon.run() finished.")
@@ -523,7 +552,7 @@ class DictateGui:
             self.click_timer.cancel()
             logging.debug("Cancelled pending click_timer on exit.")
         self.click_timer = None
-        self.speech_to_keys.exit()
+        self.speech_to_keys.shutdown()
 
         if self.app_icon:
             logging.debug("Disabling tray icon.")
@@ -606,10 +635,11 @@ class DictateGui:
                         IndexError,
                         subprocess.TimeoutExpired,
                     ):
+                        # Neither GSettings nor xrdb succeeded.
                         logging.debug(
-                            "Could not determine double-click time from GSettings or xrdb."
+                            "Could not determine double-click time from GSettings or"
+                            " xrdb."
                         )
-                        pass  # Neither GSettings nor xrdb succeeded.
             elif platform == "win32":
                 proc = subprocess.run(
                     [
@@ -628,9 +658,8 @@ class DictateGui:
                 value_ms = int(proc.stdout.split()[-1])
                 return value_ms / 1000.0
             elif platform == "darwin":  # macOS
-                # Getting this programmatically on macOS is non-trivial. Default for now.
+                # Getting this programmatically on macOS is non-trivial. Default.
                 logging.debug("Using default double-click time for macOS.")
-                pass
         except (
             subprocess.CalledProcessError,
             FileNotFoundError,
@@ -667,7 +696,6 @@ class DictateGui:
         dc = ImageDraw.Draw(image)
         padding = int(128 * 0.2)  # Add padding around the shape
 
-        # The shape_color (e.g., "red") will be drawn as opaque on the transparent canvas
         if shape_type == "record":
             # Draw a circle
             dc.ellipse((padding, padding, 128 - padding, 128 - padding), fill="red")
@@ -729,8 +757,9 @@ class DictateGui:
             self._show_exit_dialog_actual()
         else:  # First click or click after timer expired
             self.last_click_time = current_time
+            # Cancel any old timer, though it should be None here
             if self.click_timer:
-                self.click_timer.cancel()  # Cancel any old timer, though it should be None here
+                self.click_timer.cancel()
 
             self.click_timer = threading.Timer(
                 self.effective_double_click_interval,
@@ -745,7 +774,9 @@ class DictateGui:
 
 
 def main():
-
+    """
+    Main function to run the Dictate App.
+    """
     args = parse_args()
     configure_logging(args.verbose)
 
