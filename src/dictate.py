@@ -1,4 +1,5 @@
 """Dictate using your microphone to produce keyboard input."""
+
 import argparse
 import ctypes
 import ctypes.util
@@ -8,9 +9,10 @@ import subprocess
 import threading
 import time
 from datetime import datetime, timedelta, timezone
-from queue import Queue, Empty
+from queue import Empty, Queue
 from sys import platform
 from time import sleep
+
 import numpy as np
 import speech_recognition
 import torch
@@ -50,14 +52,6 @@ DEFAULT_ENERGY_THRESHOLD = 1000
 DEFAULT_RECORD_TIMEOUT = 2.0  # Seconds for real-time recording
 DEFAULT_PHRASE_TIMEOUT = 3.0  # Seconds of silence before new line
 DEFAULT_MICROPHONE = "default"  # For Linux
-
-# --- Global Variables ---
-APP_ICON = None
-SPEECH_TO_KEYS = None
-LAST_CLICK_TIME = 0.0
-CLICK_TIMER = None
-EFFECTIVE_DOUBLE_CLICK_INTERVAL = 0.5  # Default in seconds, updated by system settings
-APP_IS_EXITING = threading.Event()
 
 # --- ALSA Error Handling Setup ---
 # Define the Python callback function signature for ctypes
@@ -195,279 +189,6 @@ def setup_alsa_error_handler():
         logging.error("Error setting up ALSA error handler: %s", e, exc_info=True)
 
 
-def _get_system_double_click_time() -> float | None:
-    """Tries to get the system's double-click time in seconds."""
-    try:
-        if platform in ("linux", "linux2"):
-            # Try GSettings first (common in GNOME-based environments)
-            try:
-                proc = subprocess.run(
-                    [
-                        "gsettings",
-                        "get",
-                        "org.gnome.settings-daemon.peripherals.mouse",
-                        "double-click",
-                    ],
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                    timeout=0.5,
-                )
-                value_ms = int(proc.stdout.strip())
-                return value_ms / 1000.0
-            except (
-                subprocess.CalledProcessError,
-                FileNotFoundError,
-                ValueError,
-                subprocess.TimeoutExpired,
-            ):
-                # Fallback to xrdb for other X11 environments
-                try:
-                    proc = subprocess.run(
-                        ["xrdb", "-query"],
-                        capture_output=True,
-                        text=True,
-                        check=True,
-                        timeout=0.5,
-                    )
-                    for line in proc.stdout.splitlines():
-                        if (
-                            "DblClickTime" in line
-                        ):  # XTerm*DblClickTime, URxvt.doubleClickTime etc.
-                            value_ms = int(line.split(":")[1].strip())
-                            return value_ms / 1000.0
-                except (
-                    subprocess.CalledProcessError,
-                    FileNotFoundError,
-                    ValueError,
-                    IndexError,
-                    subprocess.TimeoutExpired,
-                ):
-                    logging.debug(
-                        "Could not determine double-click time from GSettings or xrdb."
-                    )
-                    pass  # Neither GSettings nor xrdb succeeded.
-        elif platform == "win32":
-            proc = subprocess.run(
-                [
-                    "reg",
-                    "query",
-                    "HKCU\\Control Panel\\Mouse",
-                    "/v",
-                    "DoubleClickSpeed",
-                ],
-                capture_output=True,
-                text=True,
-                check=True,
-                timeout=0.5,
-            )
-            # Output is like: '    DoubleClickSpeed    REG_SZ    500'
-            value_ms = int(proc.stdout.split()[-1])
-            return value_ms / 1000.0
-        elif platform == "darwin":  # macOS
-            # Getting this programmatically on macOS is non-trivial. Default for now.
-            logging.debug("Using default double-click time for macOS.")
-            pass
-    except (
-        subprocess.CalledProcessError,
-        FileNotFoundError,
-        ValueError,
-        IndexError,
-        subprocess.TimeoutExpired,
-        OSError,
-    ) as e:
-        logging.warning("Could not query system double-click time: %s", e)
-    return None
-
-
-def initialize_double_click_interval():
-    """Initializes the double-click interval, falling back to default if needed."""
-    global EFFECTIVE_DOUBLE_CLICK_INTERVAL
-    system_interval = _get_system_double_click_time()
-    if (
-        system_interval is not None and 0.1 <= system_interval <= 2.0
-    ):  # Sanity check interval
-        EFFECTIVE_DOUBLE_CLICK_INTERVAL = system_interval
-        logging.info(
-            "Using system double-click interval: %.2fs", EFFECTIVE_DOUBLE_CLICK_INTERVAL
-        )
-    else:
-        logging.info(
-            "Using default double-click interval: %.2fs",
-            EFFECTIVE_DOUBLE_CLICK_INTERVAL,
-        )
-
-
-def create_tray_image(width, height, shape_color, shape_type):
-    """Creates an image for the tray icon (record or stop button) with a transparent
-    background."""
-    # RGBA mode for transparency, background color is (R, G, B, Alpha)
-    # (0,0,0,0) means fully transparent black
-    image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-    dc = ImageDraw.Draw(image)
-    padding = int(width * 0.2)  # Add padding around the shape
-
-    # The shape_color (e.g., "red") will be drawn as opaque on the transparent canvas
-    if shape_type == "record":  # Draw a circle
-        dc.ellipse(
-            (padding, padding, width - padding, height - padding), fill=shape_color
-        )
-    elif shape_type == "stop":  # Draw a square
-        dc.rectangle(
-            (padding, padding, width - padding, height - padding), fill=shape_color
-        )
-    else:  # Default or fallback: a simple rectangle
-        dc.rectangle(
-            (width // 4, height // 4, width * 3 // 4, height * 3 // 4), fill=shape_color
-        )
-    return image
-
-
-def toggle_dictation():
-    """Toggles dictation on/off."""
-    global SPEECH_TO_KEYS, APP_ICON
-    logging.debug("toggle_dictation called. Current state: %s", SPEECH_TO_KEYS.enabled)
-    SPEECH_TO_KEYS.enabled = not SPEECH_TO_KEYS.enabled
-    if SPEECH_TO_KEYS.enabled:
-        logging.debug("Dictation started by toggle.")
-        if APP_ICON:
-            APP_ICON.icon = create_tray_image(64, 64, "red", shape_type="stop")
-
-    else:
-        logging.debug("Dictation stopped by toggle.")
-        if APP_ICON:
-            APP_ICON.icon = create_tray_image(64, 64, "red", shape_type="record")
-        # Consider stopping the listener if you want to save resources,
-        # but be careful about restarting it correctly.
-        # For now, we just set dictation_active to False and the callback/processing
-        # will ignore new data.
-
-
-def show_exit_dialog_actual():
-    """Shows an exit confirmation dialog or exits directly."""
-    global APP_ICON, CLICK_TIMER
-    logging.debug("show_exit_dialog_actual called.")
-
-    proceed_to_exit = False
-    if TKINTER_AVAILABLE:
-        try:
-            # Ensure tkinter root window doesn't appear if not already running
-            root = tkinter.Tk()
-            root.withdraw()  # Hide the main window
-            proceed_to_exit = tkinter.messagebox.askyesno(
-                title="Exit Dictate App?",
-                message="Are you sure you want to exit Dictate App?",
-            )
-            root.destroy()  # Clean up the hidden root window
-        except (tkinter.TclError, RuntimeError) as e:
-            logging.warning(
-                "Could not display tkinter exit dialog: %s. Exiting directly.", e
-            )
-            proceed_to_exit = True  # Fallback to exit if dialog fails
-    else:
-        logging.info("tkinter not available, exiting directly without confirmation.")
-        proceed_to_exit = True
-
-    if proceed_to_exit:
-        exit_program()  # app_icon might be None if called early
-    else:
-        logging.debug("Exit cancelled by user.")
-
-
-def delayed_single_click_action(icon_instance):
-    """Action to perform for a single click after the double-click window."""
-    if APP_IS_EXITING.is_set():  # Don't toggle if we are already exiting
-        return
-    logging.debug("Delayed single click action triggered.")
-    toggle_dictation()
-
-
-def icon_clicked_handler(icon_instance, item=None):  # item unused but pystray passes it
-    """Handles icon clicks to differentiate single vs double clicks."""
-    global LAST_CLICK_TIME, CLICK_TIMER
-    current_time = time.monotonic()
-    logging.debug("Icon clicked at %s", current_time)
-
-    if (
-        CLICK_TIMER and CLICK_TIMER.is_alive()
-    ):  # Timer is active, so this is a second click
-        CLICK_TIMER.cancel()
-        CLICK_TIMER = None
-        LAST_CLICK_TIME = 0.0  # Reset for next sequence
-        logging.debug("Double click detected.")
-        show_exit_dialog_actual()
-    else:  # First click or click after timer expired
-        LAST_CLICK_TIME = current_time
-        if CLICK_TIMER:
-            CLICK_TIMER.cancel()  # Cancel any old timer, though it should be None here
-
-        CLICK_TIMER = threading.Timer(
-            EFFECTIVE_DOUBLE_CLICK_INTERVAL,
-            delayed_single_click_action,
-            args=[icon_instance],
-        )
-        CLICK_TIMER.daemon = True  # Ensure timer doesn't block exit
-        CLICK_TIMER.start()
-        logging.debug("Started click timer for %ss", EFFECTIVE_DOUBLE_CLICK_INTERVAL)
-
-
-def exit_program():
-    """Stops the program."""
-    global APP_ICON, CLICK_TIMER
-    logging.debug("exit_program called.")
-    APP_IS_EXITING.set()  # Signal that we are exiting
-
-    if CLICK_TIMER and CLICK_TIMER.is_alive():
-        CLICK_TIMER.cancel()
-        logging.debug("Cancelled pending click_timer on exit.")
-    CLICK_TIMER = None
-    SPEECH_TO_KEYS.exit()
-
-    if APP_ICON:
-        logging.debug("Disabling tray icon.")
-        APP_ICON.stop()
-    # logging.info("Exiting application via os._exit(0).")
-    # os._exit(0)  # Force exit if threads are hanging
-
-
-def setup_tray_icon():
-    """Sets up and runs the system tray icon."""
-    global APP_ICON
-    logging.debug("setup_tray_icon called.")
-    # Initial icon is 'record' since dictation_active is False initially
-    icon_image = create_tray_image(64, 64, "red", shape_type="record")
-
-    if pystray.Icon.HAS_DEFAULT_ACTION:
-        menu = pystray.Menu(
-            pystray.MenuItem(
-                text="Toggle Dictation",
-                action=lambda icon, item: icon_clicked_handler(
-                    icon
-                ),  # Handles single/double click
-                default=True,
-                visible=False,
-            )
-        )
-    else:
-        menu = pystray.Menu(
-            pystray.MenuItem(
-                "Toggle Dictation",
-                lambda _1, _2: toggle_dictation(),
-                checked=lambda item: SPEECH_TO_KEYS.enabled,
-            ),
-            pystray.MenuItem(
-                "Exit", lambda: exit_program(APP_ICON, None)
-            ),  # Ensure lambda
-        )
-
-    APP_ICON = pystray.Icon("dictate_app", icon_image, "Dictate App", menu)
-    logging.debug("pystray.Icon created. Calling app_icon.run().")
-    APP_ICON.run()
-    logging.debug(
-        "app_icon.run() finished."
-    )  # Should not be reached if os._exit is called
-
-
 def parse_args():
     parser = argparse.ArgumentParser(
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
@@ -562,9 +283,13 @@ def open_source(mic_name: str):
 
     result = None
     if "linux" in platform:
-        for index, name in enumerate(speech_recognition.Microphone.list_microphone_names()):
+        for index, name in enumerate(
+            speech_recognition.Microphone.list_microphone_names()
+        ):
             if mic_name in name:
-                result = speech_recognition.Microphone(sample_rate=16000, device_index=index)
+                result = speech_recognition.Microphone(
+                    sample_rate=16000, device_index=index
+                )
                 logging.info("Using microphone: %s", name)
                 break
         if result is None:
@@ -587,7 +312,9 @@ def open_source(mic_name: str):
 
 
 class SpeechToKeys:
-    def __init__(self, model_name, energy_threshold, record_timeout, phrase_timeout, source):
+    def __init__(
+        self, model_name, energy_threshold, record_timeout, phrase_timeout, source
+    ):
         self.model_name = model_name
         self.energy_threshold = energy_threshold
         self.record_timeout = record_timeout
@@ -610,13 +337,19 @@ class SpeechToKeys:
         # Don't let it change, because eventually it will dictate noise.
         self.recorder.dynamic_energy_threshold = False
 
-
         with self.source:
             try:
                 self.recorder.adjust_for_ambient_noise(self.source, duration=1)
                 logging.debug("Adjusted for ambient noise.")
-            except (speech_recognition.WaitTimeoutError, OSError, ValueError, AttributeError) as e:
-                logging.warning("Could not adjust for ambient noise: %s", e, exc_info=True)
+            except (
+                speech_recognition.WaitTimeoutError,
+                OSError,
+                ValueError,
+                AttributeError,
+            ) as e:
+                logging.warning(
+                    "Could not adjust for ambient noise: %s", e, exc_info=True
+                )
                 # Continue without adjustment if it fails
 
         # Start listening in background so it's ready, and
@@ -638,10 +371,11 @@ class SpeechToKeys:
         audio_thread.start()
         logging.info("Audio processing thread started.")
 
-
     def exit(self):
         self.enabled = False
-        if self.recorder and hasattr(self.recorder, "stop_listening"):  # Check if listening
+        if self.recorder and hasattr(
+            self.recorder, "stop_listening"
+        ):  # Check if listening
             logging.debug("Stopping recorder listener.")
             self.recorder.stop_listening(wait_for_stop=False)
 
@@ -654,7 +388,6 @@ class SpeechToKeys:
                 self.data_queue.get_nowait()
             except Empty:
                 break
-
 
     def record_callback(self, _, audio: speech_recognition.AudioData) -> None:
         """
@@ -684,8 +417,8 @@ class SpeechToKeys:
                         phrase_complete = True
                     self.phrase_time = now
 
-                    # Combine audio data from queue. Create a temporary list to avoid issues
-                    # if data_queue is modified during iteration.
+                    # Combine audio data from queue. Create a temporary list to avoid
+                    # issues if data_queue is modified during iteration.
                     temp_audio_list = []
                     while not self.data_queue.empty():
                         try:
@@ -703,7 +436,9 @@ class SpeechToKeys:
                         continue
 
                     audio_np = (
-                        np.frombuffer(self.phrase_bytes, dtype=np.int16).astype(np.float32)
+                        np.frombuffer(self.phrase_bytes, dtype=np.int16).astype(
+                            np.float32
+                        )
                         / 32768.0
                     )
 
@@ -717,20 +452,23 @@ class SpeechToKeys:
                         if text:  # Only process if there is new text
                             keyboard = KeyboardController()
                             if phrase_complete:
-                                # New phrase, type with a space if previous text exists and
-                                # doesn't end with space
-                                if self.transcription_history[-1] and not self.transcription_history[
+                                # New phrase, type with a space if previous text exists
+                                # and doesn't end with space
+                                if self.transcription_history[
                                     -1
-                                ].endswith(" "):
+                                ] and not self.transcription_history[-1].endswith(" "):
                                     keyboard.type(" ")
                                 keyboard.type(text)
                                 self.transcription_history.append(text)
                             else:
-                                # Continuing a phrase.
-                                # Need to "backspace" the previous part of this phrase and
-                                # type the new full phrase. This is a simplification. A more
-                                # robust solution would be to diff the text.
-                                if self.transcription_history and self.transcription_history[-1]:
+                                # Continuing a phrase. Need to "backspace" the previous
+                                # part of this phrase and type the new full phrase. This
+                                # is a simplification. A more robust solution would be
+                                # to diff the text.
+                                if (
+                                    self.transcription_history
+                                    and self.transcription_history[-1]
+                                ):
                                     for _ in range(len(self.transcription_history[-1])):
                                         keyboard.press(Key.backspace)
                                         keyboard.release(Key.backspace)
@@ -757,10 +495,285 @@ class SpeechToKeys:
             self.reset()
         self.dictation_active = value
 
+class DictateGui:
+    def __init__(self, mic_name, model_name, energy_threshold, record_timeout, phrase_timeout):
+        self.last_click_time = 0.0
+        self.click_timer = None
+        self.effective_double_click_interval = 0.5  # Default in seconds, updated by system settings
+        self.app_is_exiting = threading.Event()
+
+        source = open_source(mic_name)
+        if source is None:
+            raise ValueError("No microphone found")
+
+        self.speech_to_keys = SpeechToKeys(model_name, energy_threshold, record_timeout, phrase_timeout, source)
+        self._initialize_double_click_interval()
+        # Start tray icon
+        logging.info("Starting tray icon...")
+        self._setup_tray_icon()  # This will block until exit
+
+    def run(self):
+        logging.debug("Calling app_icon.run().")
+        self.app_icon.run()
+        logging.debug("app_icon.run() finished.")  
+
+    def toggle_dictation(self):
+        """Toggles dictation on/off."""
+        logging.debug("toggle_dictation called. Current state: %s", self.speech_to_keys.enabled)
+        self.speech_to_keys.enabled = not self.speech_to_keys.enabled
+        if self.speech_to_keys.enabled:
+            logging.debug("Dictation started by toggle.")
+            if self.app_icon:
+                self.app_icon.icon = DictateGui._create_tray_image(64, 64, "red", shape_type="stop")
+
+        else:
+            logging.debug("Dictation stopped by toggle.")
+            if self.app_icon:
+                self.app_icon.icon = DictateGui._create_tray_image(64, 64, "red", shape_type="record")
+            # Consider stopping the listener if you want to save resources,
+            # but be careful about restarting it correctly.
+            # For now, we just set dictation_active to False and the callback/processing
+            # will ignore new data.
+
+    def exit_program(self):
+        """Stops the program."""
+        logging.debug("exit_program called.")
+        self.app_is_exiting.set()  # Signal that we are exiting
+
+        if self.click_timer and self.click_timer.is_alive():
+            self.click_timer.cancel()
+            logging.debug("Cancelled pending click_timer on exit.")
+        self.click_timer = None
+        self.speech_to_keys.exit()
+
+        if self.app_icon:
+            logging.debug("Disabling tray icon.")
+            self.app_icon.stop()
+
+    def _setup_tray_icon(self):
+        """Sets up and runs the system tray icon."""
+        logging.debug("setup_tray_icon called.")
+        # Initial icon is 'record' since dictation_active is False initially
+        icon_image = DictateGui._create_tray_image(64, 64, "red", shape_type="record")
+
+        if pystray.Icon.HAS_DEFAULT_ACTION:
+            menu = pystray.Menu(
+                pystray.MenuItem(
+                    text="Toggle Dictation",
+                    action=self._icon_clicked_handler,
+                    default=True,
+                    visible=False,
+                )
+            )
+        else:
+            menu = pystray.Menu(
+                pystray.MenuItem(
+                    "Toggle Dictation",
+                    self.toggle_dictation,
+                    checked=lambda item: self.speech_to_keys.enabled,
+                ),
+                pystray.MenuItem(
+                    "Exit", self.exit_program
+                ),
+            )
+
+        self.app_icon = pystray.Icon("dictate_app", icon_image, "Dictate App", menu)
+        logging.debug("pystray.Icon created.")
+
+    @staticmethod
+    def _get_system_double_click_time() -> float | None:
+        """Tries to get the system's double-click time in seconds."""
+        try:
+            if platform in ("linux", "linux2"):
+                # Try GSettings first (common in GNOME-based environments)
+                try:
+                    proc = subprocess.run(
+                        [
+                            "gsettings",
+                            "get",
+                            "org.gnome.settings-daemon.peripherals.mouse",
+                            "double-click",
+                        ],
+                        capture_output=True,
+                        text=True,
+                        check=True,
+                        timeout=0.5,
+                    )
+                    value_ms = int(proc.stdout.strip())
+                    return value_ms / 1000.0
+                except (
+                    subprocess.CalledProcessError,
+                    FileNotFoundError,
+                    ValueError,
+                    subprocess.TimeoutExpired,
+                ):
+                    # Fallback to xrdb for other X11 environments
+                    try:
+                        proc = subprocess.run(
+                            ["xrdb", "-query"],
+                            capture_output=True,
+                            text=True,
+                            check=True,
+                            timeout=0.5,
+                        )
+                        for line in proc.stdout.splitlines():
+                            if (
+                                "DblClickTime" in line
+                            ):  # XTerm*DblClickTime, URxvt.doubleClickTime etc.
+                                value_ms = int(line.split(":")[1].strip())
+                                return value_ms / 1000.0
+                    except (
+                        subprocess.CalledProcessError,
+                        FileNotFoundError,
+                        ValueError,
+                        IndexError,
+                        subprocess.TimeoutExpired,
+                    ):
+                        logging.debug(
+                            "Could not determine double-click time from GSettings or xrdb."
+                        )
+                        pass  # Neither GSettings nor xrdb succeeded.
+            elif platform == "win32":
+                proc = subprocess.run(
+                    [
+                        "reg",
+                        "query",
+                        "HKCU\\Control Panel\\Mouse",
+                        "/v",
+                        "DoubleClickSpeed",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                    timeout=0.5,
+                )
+                # Output is like: '    DoubleClickSpeed    REG_SZ    500'
+                value_ms = int(proc.stdout.split()[-1])
+                return value_ms / 1000.0
+            elif platform == "darwin":  # macOS
+                # Getting this programmatically on macOS is non-trivial. Default for now.
+                logging.debug("Using default double-click time for macOS.")
+                pass
+        except (
+            subprocess.CalledProcessError,
+            FileNotFoundError,
+            ValueError,
+            IndexError,
+            subprocess.TimeoutExpired,
+            OSError,
+        ) as e:
+            logging.warning("Could not query system double-click time: %s", e)
+        return None
+
+    def _initialize_double_click_interval(self):
+        """Initializes the double-click interval, falling back to default if needed."""
+        system_interval = DictateGui._get_system_double_click_time()
+        if (
+            system_interval is not None and 0.1 <= system_interval <= 2.0
+        ):  # Sanity check interval
+            self.effective_double_click_interval = system_interval
+            logging.info(
+                "Using system double-click interval: %.2fs", self.effective_double_click_interval
+            )
+        else:
+            logging.info(
+                "Using default double-click interval: %.2fs",
+                self.effective_double_click_interval,
+            )
+
+    @staticmethod
+    def _create_tray_image(width, height, shape_color, shape_type):
+        """Creates an image for the tray icon (record or stop button) with a transparent
+        background."""
+        # RGBA mode for transparency, background color is (R, G, B, Alpha)
+        # (0,0,0,0) means fully transparent black
+        image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        dc = ImageDraw.Draw(image)
+        padding = int(width * 0.2)  # Add padding around the shape
+
+        # The shape_color (e.g., "red") will be drawn as opaque on the transparent canvas
+        if shape_type == "record":  # Draw a circle
+            dc.ellipse(
+                (padding, padding, width - padding, height - padding), fill=shape_color
+            )
+        elif shape_type == "stop":  # Draw a square
+            dc.rectangle(
+                (padding, padding, width - padding, height - padding), fill=shape_color
+            )
+        else:  # Default or fallback: a simple rectangle
+            dc.rectangle(
+                (width // 4, height // 4, width * 3 // 4, height * 3 // 4), fill=shape_color
+            )
+        return image
+
+    def _show_exit_dialog_actual(self):
+        """Shows an exit confirmation dialog or exits directly."""
+        logging.debug("show_exit_dialog_actual called.")
+
+        proceed_to_exit = False
+        if TKINTER_AVAILABLE:
+            try:
+                # Ensure tkinter root window doesn't appear if not already running
+                root = tkinter.Tk()
+                root.withdraw()  # Hide the main window
+                proceed_to_exit = tkinter.messagebox.askyesno(
+                    title="Exit Dictate App?",
+                    message="Are you sure you want to exit Dictate App?",
+                )
+                root.destroy()  # Clean up the hidden root window
+            except (tkinter.TclError, RuntimeError) as e:
+                logging.warning(
+                    "Could not display tkinter exit dialog: %s. Exiting directly.", e
+                )
+                proceed_to_exit = True  # Fallback to exit if dialog fails
+        else:
+            logging.info("tkinter not available, exiting directly without confirmation.")
+            proceed_to_exit = True
+
+        if proceed_to_exit:
+            self.exit_program()  # app_icon might be None if called early
+        else:
+            logging.debug("Exit cancelled by user.")
+
+
+    def _delayed_single_click_action(self):
+        """Action to perform for a single click after the double-click window."""
+        if self.app_is_exiting.is_set():  # Don't toggle if we are already exiting
+            return
+        logging.debug("Delayed single click action triggered.")
+        self.toggle_dictation()
+
+
+    def _icon_clicked_handler(self):  # item unused but pystray passes it
+        """Handles icon clicks to differentiate single vs double clicks."""
+        current_time = time.monotonic()
+        logging.debug("Icon clicked at %s", current_time)
+
+        if (
+            self.click_timer and self.click_timer.is_alive()
+        ):  # Timer is active, so this is a second click
+            self.click_timer.cancel()
+            self.click_timer = None
+            self.last_click_time = 0.0  # Reset for next sequence
+            logging.debug("Double click detected.")
+            self._show_exit_dialog_actual()
+        else:  # First click or click after timer expired
+            self.last_click_time = current_time
+            if self.click_timer:
+                self.click_timer.cancel()  # Cancel any old timer, though it should be None here
+
+            self.click_timer = threading.Timer(
+                self.effective_double_click_interval,
+                self._delayed_single_click_action,
+                args=[],
+            )
+            self.click_timer.daemon = True  # Ensure timer doesn't block exit
+            self.click_timer.start()
+            logging.debug("Started click timer for %ss", self.effective_double_click_interval)
+
+
 def main():
-    global SPEECH_TO_KEYS
     logging.basicConfig(level=logging.WARNING)  # Set a default level
-    initialize_double_click_interval()  # Initialize before parser for logging
 
     args = parse_args()
     configure_logging(args)
@@ -768,25 +781,17 @@ def main():
     if args.mic == "list":
         logging.info(
             "Available microphones: %s",
-            ", ".join(speech_recognition.Microphone.list_microphone_names())
+            ", ".join(speech_recognition.Microphone.list_microphone_names()),
         )
-        return
-
-    source = open_source(args.mic)
-    if source is None:
         return
 
     model_name = args.model
     if not args.non_english and model_name not in ["large", "turbo"]:
         model_name += ".en"
 
-    SPEECH_TO_KEYS = SpeechToKeys(model_name, args.energy_threshold, args.record_timeout, args.phrase_timeout, source)
-
-    # Start tray icon
-    logging.info("Starting tray icon...")
-    setup_tray_icon()  # This will block until exit
-    logging.debug("main function finished after setup_tray_icon call.")
-
+    gui = DictateGui(args.mic, model_name, args.energy_threshold, args.record_timeout, args.phrase_timeout)
+    # This will block until exit
+    gui.run()
 
 if __name__ == "__main__":
     # It's good practice to ensure DISPLAY is set for GUI apps on Linux
