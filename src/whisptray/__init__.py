@@ -803,8 +803,8 @@ def main():
     configure_logging(args.verbose)
 
     if args.mic == "list":
-        logging.debug(
-            "Available microphones: %s",
+        print(
+            "Available microphones: ",
             ", ".join(speech_recognition.Microphone.list_microphone_names()),
         )
         return

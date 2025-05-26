@@ -81,4 +81,4 @@ Available arguments:
    ```
    *(Note: The specific Python packages to reinstall might vary. `pystray` itself doesn't directly link to these system libraries at install time in a way that always necessitates reinstalling it, but ensuring `PyGObject` is correctly picked up by Python is key. Often, activating the virtual environment *after* system package installation is sufficient.)*
 
-5. `make`
+5. `make develop`
