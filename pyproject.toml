@@ -15,7 +15,7 @@ dynamic = ["version"]
 description = "A simple dictation program using Whisper, pynput, and pystray. After installing, run with 'whisptray'. A tray icon will appear in the system tray. Click it to toggle dictation. Double click to exit."
 readme = "README.md"
 requires-python = ">=3.8"
-license = "GPL-3.0"
+license = "GPL-3.0-only"
 authors = [
   {name = "Brent Lewis", email = "coder0xff@gmail.com"},
 ]
@@ -30,6 +30,9 @@ dependencies = [
     "SpeechRecognition",
     "torch",
 ]
+
+[project.license-files]
+paths = ["LICENSE"]
 
 [tool.setuptools_scm]
 
