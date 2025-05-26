@@ -1,0 +1,7 @@
+[flake8]
+max-line-length = 88
+extend-ignore =
+    # Whitespace before ':' (often conflicts with black)
+    E203,
+    # Global ... unused (for our specific global usage pattern)
+    F824 

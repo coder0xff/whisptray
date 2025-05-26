@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dictate"
+version = "0.1.0"
+description = "A simple dictation program using Whisper, pynput, and pystray."
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT License"}
+authors = [
+  {name = "Your Name", email = "you@example.com"},
+]
+dependencies = [
+    "numpy",
+    "SpeechRecognition",
+    "PyAudio",
+    "openai-whisper",
+    "torch",
+    "pynput",
+    "Pillow",
+    "pystray",
+    "types-pynput", # For pynput type stubs
+    "PyGObject==3.50.1"
+]
+
+[project.scripts]
+dictate = "dictate:main"
+
+[project.urls]
+"Homepage" = "https://github.com/yourusername/dictate_app" # Placeholder
+"Bug Tracker" = "https://github.com/yourusername/dictate_app/issues" # Placeholder
+
+[project.optional-dependencies]
+dev = [
+    "flake8",
+    "black",
+    "isort",
+    "mypy",
+    "types-pynput" # For pynput type stubs
+]
+
+[[tool.mypy.overrides]]
+module = [
+    "pystray",
+    "speech_recognition",
+    "whisper"
+]
