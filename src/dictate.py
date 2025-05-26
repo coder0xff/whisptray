@@ -180,12 +180,25 @@ def setup_alsa_error_handler():
         logging.error(f"Error setting up ALSA error handler: {e}", exc_info=True)
 
 
-def create_tray_image(width, height, color1, color2):
-    """Creates a simple image for the tray icon."""
-    image = Image.new("RGB", (width, height), color1)
+def create_tray_image(width, height, shape_color, shape_type):
+    """Creates an image for the tray icon (record or stop button) with a transparent background."""
+    # RGBA mode for transparency, background color is (R, G, B, Alpha)
+    # (0,0,0,0) means fully transparent black
+    image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     dc = ImageDraw.Draw(image)
-    dc.rectangle((width // 2, 0, width, height // 2), fill=color2)
-    dc.rectangle((0, height // 2, width // 2, height), fill=color2)
+    padding = int(width * 0.2)  # Add some padding around the shape
+
+    # The shape_color (e.g., "red") will be drawn as opaque on the transparent canvas
+    if shape_type == "record":  # Draw a circle
+        dc.ellipse(
+            (padding, padding, width - padding, height - padding), fill=shape_color
+        )
+    elif shape_type == "stop":  # Draw a square
+        dc.rectangle(
+            (padding, padding, width - padding, height - padding), fill=shape_color
+        )
+    else:  # Default or fallback: a simple rectangle
+        dc.rectangle((width // 4, height // 4, width * 3 // 4, height * 3 // 4), fill=shape_color)
     return image
 
 
@@ -202,7 +215,7 @@ def record_callback(_, audio: sr.AudioData) -> None:
 
 def process_audio():
     """Processes audio from the queue and performs transcription."""
-    global phrase_time, phrase_bytes, transcription_history, audio_model
+    global phrase_time, phrase_bytes, transcription_history, audio_model, app_icon
 
     while True:
         if not dictation_active:
@@ -283,11 +296,13 @@ def process_audio():
 
 def toggle_dictation(icon, item):
     """Toggles dictation on/off."""
-    global dictation_active, recorder, source
+    global dictation_active, recorder, source, app_icon
     logging.debug(f"toggle_dictation called. Current state: {dictation_active}")
     dictation_active = not dictation_active
     if dictation_active:
         logging.debug("Dictation started by toggle.")
+        if app_icon:
+            app_icon.icon = create_tray_image(64, 64, "red", shape_type="stop")
         # The background listener is already started in main().
         # We just need to ensure data is cleared for a fresh start.
         # Clear previous phrase data to avoid re-typing old text
@@ -303,6 +318,8 @@ def toggle_dictation(icon, item):
 
     else:
         logging.debug("Dictation stopped by toggle.")
+        if app_icon:
+            app_icon.icon = create_tray_image(64, 64, "red", shape_type="record")
         # Consider stopping the listener if you want to save resources,
         # but be careful about restarting it correctly.
         # For now, we just set dictation_active to False and the callback/processing
@@ -328,7 +345,8 @@ def setup_tray_icon():
     """Sets up and runs the system tray icon."""
     global app_icon
     logging.debug("setup_tray_icon called.")
-    icon_image = create_tray_image(64, 64, "blue", "white")  # Placeholder icon
+    # Initial icon is 'record' since dictation_active is False initially
+    icon_image = create_tray_image(64, 64, "red", shape_type="record")
     menu = pystray.Menu(
         pystray.MenuItem(
             "Toggle Dictation",
