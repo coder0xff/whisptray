@@ -26,11 +26,11 @@ C_HELPER_SRC = src/alsa_redirect.c
 C_HELPER_OUTPUT = src/dictate/alsa_redirect.so
 
 # Build the package
-package: $(VENV_DIR)/bin/activate $(C_HELPER_OUTPUT)
+package: $(VENV_DIR)/bin/activate
 	@echo "Building the package..."
-	$(VENV_DIR)/bin/python -m build
+	$(VENV_DIR)/bin/$(PIP) install build
+	$(VENV_DIR)/bin/python -m build --sdist
 	@echo "Package build complete. Find artifacts in dist/ directory."
-
 
 $(VENV_DIR)/bin/activate: # Target to create venv if activate script doesn't exist
 	@echo "Creating virtual environment in $(VENV_DIR)..."

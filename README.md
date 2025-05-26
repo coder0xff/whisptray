@@ -45,10 +45,7 @@ A simple dictation program that uses OpenAI's Whisper for speech-to-text,
 5. **System Dependency (ffmpeg for Whisper):**
    Ensure `ffmpeg` is installed on your system, as Whisper requires it for audio processing.
    - **Ubuntu/Debian**: `sudo apt update && sudo apt install ffmpeg`
-   - **Arch Linux**: `sudo pacman -S ffmpeg`
-   - **MacOS (Homebrew)**: `brew install ffmpeg`
-   - **Windows (Chocolatey)**: `choco install ffmpeg`
-   - **Windows (Scoop)**: `scoop install ffmpeg`
+
 
 6. **System Dependency (AppIndicator & PyGObject for Tray Icon on Linux):**
    For the system tray icon to function reliably on many Linux desktop environments (especially those using GNOME Shell), `pystray` works best with the `AppIndicator` backend. This requires `PyGObject` (Python bindings for GObject) and the `AppIndicator` GObject introspection bindings.
@@ -72,8 +69,7 @@ A simple dictation program that uses OpenAI's Whisper for speech-to-text,
 
    After installing these system packages, you might need to reinstall the Python dependencies if you are using a virtual environment to ensure they pick up the new system libraries:
    ```bash
-   pip uninstall pystray Pillow # Or other relevant packages if pystray pulls them
-   pip install pystray Pillow # Or pip install -e .[dev] if you used that initially
+   pip install pystray --force-reinstall
    ```
    *(Note: The specific Python packages to reinstall might vary. `pystray` itself doesn't directly link to these system libraries at install time in a way that always necessitates reinstalling it, but ensuring `PyGObject` is correctly picked up by Python is key. Often, activating the virtual environment *after* system package installation is sufficient.)*
 

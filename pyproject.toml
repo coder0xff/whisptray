@@ -5,9 +5,9 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 package-dir = {"" = "src"}
 packages = ["dictate"]
+zip-safe = false
 
 [tool.setuptools.package-data]
-dictate = ["*.so"]
 
 [project]
 name = "dictate"
@@ -15,16 +15,16 @@ version = "0.1.0"
 description = "A simple dictation program using Whisper, pynput, and pystray."
 readme = "README.md"
 requires-python = ">=3.8"
-license = {text = "MIT License"}
+license = "MIT"
 authors = [
-  {name = "Your Name", email = "you@example.com"},
+  {name = "Brent Lewis", email = "coder0xff@gmail.com"},
 ]
 dependencies = [
     "numpy",
     "openai-whisper",
     "Pillow",
     "PyAudio",
-    "PyGObject==3.50.1"
+    "PyGObject==3.50.1",
     "pynput",
     "pystray",
     "SpeechRecognition",
@@ -41,7 +41,7 @@ dictate = "dictate:main"
 [project.optional-dependencies]
 dev = [
     "black",
-    "build"
+    "build",
     "flake8",
     "isort",
     "mypy",

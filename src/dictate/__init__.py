@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from queue import Empty, Queue
 from sys import platform
 from time import sleep
+import glob
 
 import numpy as np
 import speech_recognition
@@ -118,23 +119,44 @@ def setup_alsa_error_handler():
         return
 
     try:
+        c_redirect_lib = None
+        # Try to load the C library for redirecting ALSA messages
+        # Path when installed or running from source with Makefile-built .so
         c_redirect_lib_path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)), "alsa_redirect.so"
         )
-        if not os.path.exists(c_redirect_lib_path):
+
+        if os.path.exists(c_redirect_lib_path):
             try:
-                c_redirect_lib = ctypes.CDLL("alsa_redirect.so")
-                logging.debug("Loaded alsa_redirect.so from system path.")
-            except OSError:
-                logging.error(
-                    "alsa_redirect.so not found at %s or in system paths. ALSA logs"
-                    " will not be redirected.",
-                    c_redirect_lib_path,
-                )
-                return
+                c_redirect_lib = ctypes.CDLL(c_redirect_lib_path)
+                logging.debug("Loaded alsa_redirect.so from: %s", c_redirect_lib_path)
+            except OSError as e:
+                logging.error("Error loading alsa_redirect.so from %s: %s", c_redirect_lib_path, e)
         else:
-            c_redirect_lib = ctypes.CDLL(c_redirect_lib_path)
-            logging.debug("Loaded alsa_redirect.so from: %s", c_redirect_lib_path)
+            # Fallback for when installed as a package, where setuptools renames the .so file
+            package_dir = os.path.dirname(os.path.abspath(__file__))
+            found_libs = list(glob.glob(os.path.join(package_dir, "alsa_redirect*.so")))
+            if found_libs:
+                # Take the first one found (should ideally be only one)
+                # Sort to get a deterministic choice if multiple somehow exist
+                found_libs.sort()
+                c_redirect_lib_path_found = found_libs[0]
+                try:
+                    c_redirect_lib = ctypes.CDLL(c_redirect_lib_path_found)
+                    logging.debug("Loaded compiled C extension: %s", c_redirect_lib_path_found)
+                except OSError as e:
+                    logging.error("Error loading compiled C extension %s: %s", c_redirect_lib_path_found, e)
+            else:
+                # Last resort: try loading from system path (less reliable)
+                try:
+                    c_redirect_lib = ctypes.CDLL("alsa_redirect.so")
+                    logging.debug("Loaded alsa_redirect.so from system path.")
+                except OSError:
+                    logging.error(
+                        "alsa_redirect.so not found at %s, nor as alsa_redirect*.so in package dir, nor in system paths. ALSA logs "
+                        "will not be redirected.",
+                        c_redirect_lib_path,
+                    )
 
         # void register_python_alsa_callback(python_callback_func_t callback);
         c_redirect_lib.register_python_alsa_callback.argtypes = [
