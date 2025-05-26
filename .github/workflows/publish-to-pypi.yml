@@ -1,0 +1,39 @@
+name: Publish Python sdist to PyPI
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-publish:
+    name: Build and publish sdist to PyPI
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://test.pypi.org/p/whisptray # URL to the PyPI project (once published)
+    permissions:
+      id-token: write # IMPORTANT: this permission is mandatory for trusted publishing
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Fetch all history for setuptools_scm
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.8' # Use a recent Python version
+
+      - name: Install build dependencies
+        run: pip install build twine
+
+      - name: Build sdist
+        run: python -m build --sdist
+
+      - name: Publish package to PyPI
+        # Uses trusted publishing via OIDC.
+        uses: pypa/gh-action-pypi-publish@v1.9.0 
