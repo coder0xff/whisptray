@@ -3,11 +3,25 @@ import ctypes
 import ctypes.util
 import logging
 import os
+import subprocess
 import threading
+import time  # Added
 from datetime import datetime, timedelta, timezone
 from queue import Queue
 from sys import platform
 from time import sleep
+
+# Conditional import for tkinter
+try:
+    import tkinter
+    import tkinter.messagebox
+    TKINTER_AVAILABLE = True
+except ImportError:
+    TKINTER_AVAILABLE = False
+
+if "linux" in platform:
+    # Don't use AppIndicator, because it doesn't support direct icon clicks.
+    os.environ["PYSTRAY_BACKEND"] = "xorg"
 
 import numpy as np
 import pystray
@@ -29,6 +43,12 @@ data_queue = Queue[bytes]()
 phrase_time = None
 phrase_bytes = b""
 transcription_history = [""]  # Stores the history of transcriptions
+
+# New globals for click handling
+last_click_time = 0.0
+click_timer = None  # Will be a threading.Timer
+EFFECTIVE_DOUBLE_CLICK_INTERVAL = 0.5  # Default in seconds, updated by system settings
+app_is_exiting = threading.Event()
 
 # --- Configuration ---
 MODEL_NAME = "turbo"
@@ -180,6 +200,63 @@ def setup_alsa_error_handler():
         logging.error(f"Error setting up ALSA error handler: {e}", exc_info=True)
 
 
+def _get_system_double_click_time() -> float | None:
+    """Tries to get the system's double-click time in seconds."""
+    try:
+        if platform == "linux" or platform == "linux2":
+            # Try GSettings first (common in GNOME-based environments)
+            try:
+                proc = subprocess.run(
+                    ["gsettings", "get", "org.gnome.settings-daemon.peripherals.mouse", "double-click"],
+                    capture_output=True, text=True, check=True, timeout=0.5
+                )
+                value_ms = int(proc.stdout.strip())
+                return value_ms / 1000.0
+            except (subprocess.CalledProcessError, FileNotFoundError, ValueError, subprocess.TimeoutExpired):
+                # Fallback to xrdb for other X11 environments
+                try:
+                    proc = subprocess.run(
+                        ["xrdb", "-query"], capture_output=True, text=True, check=True, timeout=0.5
+                    )
+                    for line in proc.stdout.splitlines():
+                        if "DblClickTime" in line: # XTerm*DblClickTime, URxvt.doubleClickTime etc.
+                            value_ms = int(line.split(":")[1].strip())
+                            return value_ms / 1000.0
+                except (subprocess.CalledProcessError, FileNotFoundError, ValueError, IndexError, subprocess.TimeoutExpired):
+                    logging.debug("Could not determine double-click time from GSettings or xrdb.")
+                    pass # Neither found or error
+        elif platform == "win32":
+            proc = subprocess.run(
+                ["reg", "query", "HKCU\\Control Panel\\Mouse", "/v", "DoubleClickSpeed"],
+                capture_output=True, text=True, check=True, timeout=0.5
+            )
+            # Output is like: '    DoubleClickSpeed    REG_SZ    500'
+            value_ms = int(proc.stdout.split()[-1])
+            return value_ms / 1000.0
+        elif platform == "darwin": # macOS
+            # Getting this programmatically on macOS is non-trivial and might require
+            # specific permissions or more complex methods. Using a default for now.
+            # Possible future exploration:
+            # defaults read -g com.apple.mouse.scaling (mouse speed, not click)
+            # defaults read com.apple.driver.AppleHIDMouse Button2ClickTime (might work)
+            logging.debug("Using default double-click time for macOS.")
+            pass
+    except (subprocess.CalledProcessError, FileNotFoundError, ValueError, IndexError, subprocess.TimeoutExpired) as e:
+        logging.warning(f"Could not query system double-click time: {e}")
+    return None
+
+
+def initialize_double_click_interval():
+    """Initializes the double-click interval, falling back to default if needed."""
+    global EFFECTIVE_DOUBLE_CLICK_INTERVAL
+    system_interval = _get_system_double_click_time()
+    if system_interval is not None and 0.1 <= system_interval <= 2.0: # Sanity check interval
+        EFFECTIVE_DOUBLE_CLICK_INTERVAL = system_interval
+        logging.info(f"Using system double-click interval: {EFFECTIVE_DOUBLE_CLICK_INTERVAL:.2f}s")
+    else:
+        logging.info(f"Using default double-click interval: {EFFECTIVE_DOUBLE_CLICK_INTERVAL:.2f}s")
+
+
 def create_tray_image(width, height, shape_color, shape_type):
     """Creates an image for the tray icon (record or stop button) with a transparent background."""
     # RGBA mode for transparency, background color is (R, G, B, Alpha)
@@ -326,10 +403,81 @@ def toggle_dictation(icon, item):
         # will ignore new data.
 
 
+def show_exit_dialog_actual(icon_instance=None): # icon_instance is for consistency
+    """Shows an exit confirmation dialog or exits directly."""
+    global app_icon, click_timer
+    logging.debug("show_exit_dialog_actual called.")
+
+    proceed_to_exit = False
+    if TKINTER_AVAILABLE:
+        try:
+            # Ensure tkinter root window doesn't appear if not already running
+            root = tkinter.Tk()
+            root.withdraw() # Hide the main window
+            proceed_to_exit = tkinter.messagebox.askyesno(
+                title="Exit Dictate App?",
+                message="Are you sure you want to exit Dictate App?"
+            )
+            root.destroy() # Clean up the hidden root window
+        except Exception as e:
+            logging.warning(f"Could not display tkinter exit dialog: {e}. Exiting directly.")
+            proceed_to_exit = True # Fallback to exit if dialog fails
+    else:
+        logging.info("tkinter not available, exiting directly without confirmation.")
+        proceed_to_exit = True
+
+    if proceed_to_exit:
+        exit_program(app_icon, None) # app_icon might be None if called early
+    else:
+        logging.debug("Exit cancelled by user.")
+
+
+def delayed_single_click_action(icon_instance):
+    """Action to perform for a single click after the double-click window."""
+    if app_is_exiting.is_set(): # Don't toggle if we are already exiting
+        return
+    logging.debug("Delayed single click action triggered.")
+    toggle_dictation(icon_instance, None) # Pass icon_instance for consistency
+
+
+def icon_clicked_handler(icon_instance, item=None): # item is unused but pystray might pass it
+    """Handles icon clicks to differentiate single vs double clicks."""
+    global last_click_time, click_timer
+    current_time = time.monotonic()
+    logging.debug(f"Icon clicked at {current_time}")
+
+    if click_timer and click_timer.is_alive(): # Timer is active, so this is a second click
+        click_timer.cancel()
+        click_timer = None
+        last_click_time = 0.0 # Reset for next sequence
+        logging.debug("Double click detected.")
+        show_exit_dialog_actual(icon_instance)
+    else: # First click or click after timer expired
+        last_click_time = current_time
+        if click_timer:
+            click_timer.cancel() # Cancel any old timer, though it should be None here
+
+        click_timer = threading.Timer(
+            EFFECTIVE_DOUBLE_CLICK_INTERVAL,
+            delayed_single_click_action,
+            args=[icon_instance]
+        )
+        click_timer.daemon = True # Ensure timer doesn't block exit
+        click_timer.start()
+        logging.debug(f"Started click timer for {EFFECTIVE_DOUBLE_CLICK_INTERVAL}s")
+
+
 def exit_program(icon, item):
     """Stops the program."""
-    global dictation_active, app_icon, recorder
+    global dictation_active, app_icon, recorder, click_timer
     logging.debug("exit_program called.")
+    app_is_exiting.set() # Signal that we are exiting
+
+    if click_timer and click_timer.is_alive():
+        click_timer.cancel()
+        logging.debug("Cancelled pending click_timer on exit.")
+    click_timer = None
+
     dictation_active = False
     if recorder and hasattr(recorder, "stop_listening"):  # Check if listening
         logging.debug("Stopping recorder listener.")
@@ -347,16 +495,28 @@ def setup_tray_icon():
     logging.debug("setup_tray_icon called.")
     # Initial icon is 'record' since dictation_active is False initially
     icon_image = create_tray_image(64, 64, "red", shape_type="record")
-    menu = pystray.Menu(
-        pystray.MenuItem(
-            "Toggle Dictation",
-            lambda: toggle_dictation(
-                app_icon, None
-            ),  # Ensure lambda for direct call if needed
-            checked=lambda item: dictation_active,
-        ),
-        pystray.MenuItem("Exit", lambda: exit_program(app_icon, None)),  # Ensure lambda
-    )
+
+    if pystray.Icon.HAS_DEFAULT_ACTION:
+        menu = pystray.Menu(
+            pystray.MenuItem(
+                text="Toggle Dictation", # Text for the menu item
+                action=lambda icon, item: icon_clicked_handler(icon), # Handles single/double click
+                default=True,
+                visible=False,
+            )
+        )
+    else:
+        menu = pystray.Menu(
+            pystray.MenuItem(
+                "Toggle Dictation",
+                lambda: toggle_dictation(
+                    app_icon, None
+                ),  # Ensure lambda for direct call if needed
+                checked=lambda item: dictation_active,
+            ),
+            pystray.MenuItem("Exit", lambda: exit_program(app_icon, None)),  # Ensure lambda
+        )
+
     app_icon = pystray.Icon("dictate_app", icon_image, "Dictate App", menu)
     logging.debug("pystray.Icon created. Calling app_icon.run().")
     app_icon.run()
@@ -382,6 +542,7 @@ def main():
     # if verbose is specified, or rely on the default print for critical errors
     # if not.
     logging.basicConfig(level=logging.WARNING) # Set a default level
+    initialize_double_click_interval() # Initialize before parser for logging
 
     parser = argparse.ArgumentParser(
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
