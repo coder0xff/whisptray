@@ -37,7 +37,6 @@ if "linux" in platform:
 # pylint: disable=wrong-import-position
 import pystray
 
-# Conditional import for tkinter
 try:
     import tkinter
     import tkinter.messagebox
@@ -115,7 +114,7 @@ def setup_alsa_error_handler():
     Sets up a custom ALSA error handler using the C helper library.
     """
     if "linux" not in platform:
-        logging.info("Skipping ALSA error handler setup on non-Linux platform.")
+        logging.debug("Skipping ALSA error handler setup on non-Linux platform.")
         return
 
     try:
@@ -125,7 +124,7 @@ def setup_alsa_error_handler():
         if not os.path.exists(c_redirect_lib_path):
             try:
                 c_redirect_lib = ctypes.CDLL("alsa_redirect.so")
-                logging.info("Loaded alsa_redirect.so from system path.")
+                logging.debug("Loaded alsa_redirect.so from system path.")
             except OSError:
                 logging.error(
                     "alsa_redirect.so not found at %s or in system paths. ALSA logs"
@@ -135,9 +134,8 @@ def setup_alsa_error_handler():
                 return
         else:
             c_redirect_lib = ctypes.CDLL(c_redirect_lib_path)
-            logging.info("Loaded alsa_redirect.so from: %s", c_redirect_lib_path)
+            logging.debug("Loaded alsa_redirect.so from: %s", c_redirect_lib_path)
 
-        # 2. Define argtypes and restype for functions in alsa_redirect.so
         # void register_python_alsa_callback(python_callback_func_t callback);
         c_redirect_lib.register_python_alsa_callback.argtypes = [
             PYTHON_ALSA_ERROR_HANDLER_FUNC
@@ -153,40 +151,43 @@ def setup_alsa_error_handler():
         c_redirect_lib.clear_alsa_error_handling.restype = ctypes.c_int
 
         c_redirect_lib.register_python_alsa_callback(py_error_handler_ctype)
-        logging.info("Registered Python ALSA error handler with C helper.")
+        logging.debug("Registered Python ALSA error handler with C helper.")
 
-        # 4. Ask the C library to set ALSA's error handler
         ret = c_redirect_lib.initialize_alsa_error_handling()
         if ret < 0:
             logging.error(
                 "C library failed to set ALSA error handler. Error code: %d", ret
             )
-        else:
-            logging.info("C library successfully set ALSA error handler.")
-            try:
-                asound_lib_name = ctypes.util.find_library("asound")
-                if asound_lib_name:
-                    asound = ctypes.CDLL(asound_lib_name)
-                    # Ensure snd_config_update_free_global is defined before calling
-                    if hasattr(asound, "snd_config_update_free_global"):
-                        asound.snd_config_update_free_global.argtypes = []
-                        asound.snd_config_update_free_global.restype = ctypes.c_int
-                        asound.snd_config_update_free_global()
-                        logging.debug(
-                            "Called snd_config_update_free_global to test ALSA handler."
-                        )
-                    else:
-                        logging.debug(
-                            "snd_config_update_free_global not found in libasound,"
-                            " skipping test call."
-                        )
-                else:
-                    logging.warning("libasound not found, skipping ALSA test call.")
-            except (OSError, AttributeError, ctypes.ArgumentError) as e_test:
-                logging.debug("Exception during ALSA test call: %s", e_test)
 
     except (OSError, AttributeError, TypeError, ValueError, ctypes.ArgumentError) as e:
         logging.error("Error setting up ALSA error handler: %s", e, exc_info=True)
+
+
+def configure_logging(verbose: bool):
+    if verbose:
+        logging.basicConfig(
+            level=logging.DEBUG,
+            format=(
+                "%(asctime)s - %(levelname)s - %(name)s - %(threadName)s - %(message)s"
+            ),
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+        logging.debug("Verbose logging enabled.")
+    else:
+        logging.basicConfig(
+            level=logging.INFO,
+            format=(
+                "%(asctime)s - %(levelname)s - %(name)s - %(threadName)s - %(message)s"
+            ),
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+
+    # Setup ALSA error handler (if on Linux)
+    # This should be done early, before any library might initialize ALSA.
+    if "linux" in platform:
+        setup_alsa_error_handler()
+    else:
+        logging.debug("Skipping ALSA error handler setup on non-Linux platform.")
 
 
 def parse_args():
@@ -246,39 +247,7 @@ def parse_args():
     return args
 
 
-def configure_logging(args):
-    # Configure logging properly based on verbosity
-    # Remove all handlers associated with the root logger object.
-    for handler in logging.root.handlers[:]:
-        logging.root.removeHandler(handler)
-
-    if args.verbose:
-        logging.basicConfig(
-            level=logging.INFO,  # INFO and above for verbose
-            format=(
-                "%(asctime)s - %(levelname)s - %(name)s - %(threadName)s - %(message)s"
-            ),
-            datefmt="%Y-%m-%d %H:%M:%S",
-        )
-        logging.info("Verbose logging enabled.")
-    else:
-        logging.basicConfig(
-            level=logging.WARNING,  # WARNING and above by default
-            format=(
-                "%(asctime)s - %(levelname)s - %(name)s - %(threadName)s - %(message)s"
-            ),
-            datefmt="%Y-%m-%d %H:%M:%S",
-        )
-
-    # Setup ALSA error handler (if on Linux)
-    # This should be done early, before any library might initialize ALSA.
-    if "linux" in platform:
-        setup_alsa_error_handler()
-    else:
-        logging.info("Skipping ALSA error handler setup on non-Linux platform.")
-
-
-def open_source(mic_name: str):
+def open_microphone(mic_name: str):
     assert mic_name
 
     result = None
@@ -290,7 +259,7 @@ def open_source(mic_name: str):
                 result = speech_recognition.Microphone(
                     sample_rate=16000, device_index=index
                 )
-                logging.info("Using microphone: %s", name)
+                logging.debug("Using microphone: %s", name)
                 break
         if result is None:
             logging.error(
@@ -298,15 +267,15 @@ def open_source(mic_name: str):
                 " microphones.",
                 mic_name,
             )
-            logging.info("Available microphone devices are: ")
+            logging.debug("Available microphone devices are: ")
             for index, name_available in enumerate(
                 speech_recognition.Microphone.list_microphone_names()
             ):
-                logging.info('Microphone with name "%s" found', name_available)
+                logging.debug('Microphone with name "%s" found', name_available)
             return
     else:
         result = speech_recognition.Microphone(sample_rate=16000)
-        logging.info("Using default microphone.")
+        logging.debug("Using default microphone.")
 
     return result
 
@@ -357,19 +326,21 @@ class SpeechToKeys:
         try:
             # The callback will now check dictation_active before putting data in queue
             self.recorder.listen_in_background(
-                self.source, self.record_callback, phrase_time_limit=self.record_timeout
+                self.source,
+                self._record_callback,
+                phrase_time_limit=self.record_timeout,
             )
-            logging.info("Background listener started.")
+            logging.debug("Background listener started.")
         except (OSError, AttributeError, RuntimeError) as e:
             logging.error("Error starting background listener: %s", e, exc_info=True)
             return
 
         # Start audio processing thread
         audio_thread = threading.Thread(
-            target=self.process_audio, daemon=True, name="AudioProcessThread"
+            target=self._process_audio, daemon=True, name="AudioProcessThread"
         )
         audio_thread.start()
-        logging.info("Audio processing thread started.")
+        logging.debug("Audio processing thread started.")
 
     def exit(self):
         self.enabled = False
@@ -379,7 +350,7 @@ class SpeechToKeys:
             logging.debug("Stopping recorder listener.")
             self.recorder.stop_listening(wait_for_stop=False)
 
-    def reset(self):
+    def _reset(self):
         self.phrase_bytes = b""
         self.phrase_time = None
         self.transcription_history = [""]
@@ -389,7 +360,7 @@ class SpeechToKeys:
             except Empty:
                 break
 
-    def record_callback(self, _, audio: speech_recognition.AudioData) -> None:
+    def _record_callback(self, _, audio: speech_recognition.AudioData) -> None:
         """
         Threaded callback function to receive audio data when recordings finish.
         audio: An AudioData containing the recorded bytes.
@@ -398,7 +369,7 @@ class SpeechToKeys:
             data = audio.get_raw_data()
             self.data_queue.put(data)
 
-    def process_audio(self):
+    def _process_audio(self):
         """Processes audio from the queue and performs transcription."""
         while True:
             if not self.dictation_active:
@@ -492,44 +463,52 @@ class SpeechToKeys:
             # The background listener is already started in __init__(). We just need to
             # ensure data is cleared for a fresh start. Clear previous phrase data to
             # avoid re-typing old text.
-            self.reset()
+            self._reset()
         self.dictation_active = value
 
+
 class DictateGui:
-    def __init__(self, mic_name, model_name, energy_threshold, record_timeout, phrase_timeout):
+    def __init__(
+        self, mic_name, model_name, energy_threshold, record_timeout, phrase_timeout
+    ):
         self.last_click_time = 0.0
         self.click_timer = None
-        self.effective_double_click_interval = 0.5  # Default in seconds, updated by system settings
+        # Default in seconds, updated by system settings
+        self.effective_double_click_interval = 0.5
         self.app_is_exiting = threading.Event()
 
-        source = open_source(mic_name)
+        source = open_microphone(mic_name)
         if source is None:
             raise ValueError("No microphone found")
 
-        self.speech_to_keys = SpeechToKeys(model_name, energy_threshold, record_timeout, phrase_timeout, source)
+        self.speech_to_keys = SpeechToKeys(
+            model_name, energy_threshold, record_timeout, phrase_timeout, source
+        )
         self._initialize_double_click_interval()
         # Start tray icon
-        logging.info("Starting tray icon...")
+        logging.debug("Starting tray icon...")
         self._setup_tray_icon()  # This will block until exit
 
     def run(self):
         logging.debug("Calling app_icon.run().")
         self.app_icon.run()
-        logging.debug("app_icon.run() finished.")  
+        logging.debug("app_icon.run() finished.")
 
     def toggle_dictation(self):
         """Toggles dictation on/off."""
-        logging.debug("toggle_dictation called. Current state: %s", self.speech_to_keys.enabled)
+        logging.debug(
+            "toggle_dictation called. Current state: %s", self.speech_to_keys.enabled
+        )
         self.speech_to_keys.enabled = not self.speech_to_keys.enabled
         if self.speech_to_keys.enabled:
             logging.debug("Dictation started by toggle.")
             if self.app_icon:
-                self.app_icon.icon = DictateGui._create_tray_image(64, 64, "red", shape_type="stop")
+                self.app_icon.icon = DictateGui._create_tray_image("record")
 
         else:
             logging.debug("Dictation stopped by toggle.")
             if self.app_icon:
-                self.app_icon.icon = DictateGui._create_tray_image(64, 64, "red", shape_type="record")
+                self.app_icon.icon = DictateGui._create_tray_image("stop")
             # Consider stopping the listener if you want to save resources,
             # but be careful about restarting it correctly.
             # For now, we just set dictation_active to False and the callback/processing
@@ -553,8 +532,8 @@ class DictateGui:
     def _setup_tray_icon(self):
         """Sets up and runs the system tray icon."""
         logging.debug("setup_tray_icon called.")
-        # Initial icon is 'record' since dictation_active is False initially
-        icon_image = DictateGui._create_tray_image(64, 64, "red", shape_type="record")
+        # Initial icon is 'stop' since dictation_active is False initially
+        icon_image = DictateGui._create_tray_image("stop")
 
         if pystray.Icon.HAS_DEFAULT_ACTION:
             menu = pystray.Menu(
@@ -572,9 +551,7 @@ class DictateGui:
                     self.toggle_dictation,
                     checked=lambda item: self.speech_to_keys.enabled,
                 ),
-                pystray.MenuItem(
-                    "Exit", self.exit_program
-                ),
+                pystray.MenuItem("Exit", self.exit_program),
             )
 
         self.app_icon = pystray.Icon("dictate_app", icon_image, "Dictate App", menu)
@@ -672,38 +649,31 @@ class DictateGui:
             system_interval is not None and 0.1 <= system_interval <= 2.0
         ):  # Sanity check interval
             self.effective_double_click_interval = system_interval
-            logging.info(
-                "Using system double-click interval: %.2fs", self.effective_double_click_interval
+            logging.debug(
+                "Using system double-click interval: %.2fs",
+                self.effective_double_click_interval,
             )
         else:
-            logging.info(
+            logging.debug(
                 "Using default double-click interval: %.2fs",
                 self.effective_double_click_interval,
             )
 
     @staticmethod
-    def _create_tray_image(width, height, shape_color, shape_type):
+    def _create_tray_image(shape_type):
         """Creates an image for the tray icon (record or stop button) with a transparent
         background."""
-        # RGBA mode for transparency, background color is (R, G, B, Alpha)
-        # (0,0,0,0) means fully transparent black
-        image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        image = Image.new("RGB", (128, 128), (0, 0, 0))
         dc = ImageDraw.Draw(image)
-        padding = int(width * 0.2)  # Add padding around the shape
+        padding = int(128 * 0.2)  # Add padding around the shape
 
         # The shape_color (e.g., "red") will be drawn as opaque on the transparent canvas
-        if shape_type == "record":  # Draw a circle
-            dc.ellipse(
-                (padding, padding, width - padding, height - padding), fill=shape_color
-            )
-        elif shape_type == "stop":  # Draw a square
-            dc.rectangle(
-                (padding, padding, width - padding, height - padding), fill=shape_color
-            )
-        else:  # Default or fallback: a simple rectangle
-            dc.rectangle(
-                (width // 4, height // 4, width * 3 // 4, height * 3 // 4), fill=shape_color
-            )
+        if shape_type == "record":
+            # Draw a circle
+            dc.ellipse((padding, padding, 128 - padding, 128 - padding), fill="red")
+        else:  # shape_type == "stop"
+            # Draw a square
+            dc.rectangle((padding, padding, 128 - padding, 128 - padding), fill="white")
         return image
 
     def _show_exit_dialog_actual(self):
@@ -727,7 +697,9 @@ class DictateGui:
                 )
                 proceed_to_exit = True  # Fallback to exit if dialog fails
         else:
-            logging.info("tkinter not available, exiting directly without confirmation.")
+            logging.debug(
+                "tkinter not available, exiting directly without confirmation."
+            )
             proceed_to_exit = True
 
         if proceed_to_exit:
@@ -735,14 +707,12 @@ class DictateGui:
         else:
             logging.debug("Exit cancelled by user.")
 
-
     def _delayed_single_click_action(self):
         """Action to perform for a single click after the double-click window."""
         if self.app_is_exiting.is_set():  # Don't toggle if we are already exiting
             return
         logging.debug("Delayed single click action triggered.")
         self.toggle_dictation()
-
 
     def _icon_clicked_handler(self):  # item unused but pystray passes it
         """Handles icon clicks to differentiate single vs double clicks."""
@@ -769,17 +739,18 @@ class DictateGui:
             )
             self.click_timer.daemon = True  # Ensure timer doesn't block exit
             self.click_timer.start()
-            logging.debug("Started click timer for %ss", self.effective_double_click_interval)
+            logging.debug(
+                "Started click timer for %ss", self.effective_double_click_interval
+            )
 
 
 def main():
-    logging.basicConfig(level=logging.WARNING)  # Set a default level
 
     args = parse_args()
-    configure_logging(args)
+    configure_logging(args.verbose)
 
     if args.mic == "list":
-        logging.info(
+        logging.debug(
             "Available microphones: %s",
             ", ".join(speech_recognition.Microphone.list_microphone_names()),
         )
@@ -789,9 +760,16 @@ def main():
     if not args.non_english and model_name not in ["large", "turbo"]:
         model_name += ".en"
 
-    gui = DictateGui(args.mic, model_name, args.energy_threshold, args.record_timeout, args.phrase_timeout)
+    gui = DictateGui(
+        args.mic,
+        model_name,
+        args.energy_threshold,
+        args.record_timeout,
+        args.phrase_timeout,
+    )
     # This will block until exit
     gui.run()
+
 
 if __name__ == "__main__":
     # It's good practice to ensure DISPLAY is set for GUI apps on Linux
