@@ -30,9 +30,6 @@ dependencies = [
     "torch",
 ]
 
-[project.license-files]
-paths = ["LICENSE"]
-
 [tool.setuptools_scm]
 
 [project.scripts]
