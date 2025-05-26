@@ -1,4 +1,4 @@
-# Makefile for Dictate App
+# Makefile for whisptray App
 
 .PHONY: all install develop clean run check format help package
 
@@ -20,10 +20,10 @@ ACTIVATE = . $(VENV_DIR)/bin/activate
 
 # Source files
 # For Python tools
-PYTHON_SRC_FILES = src/dictate.py
+PYTHON_SRC_FILES = src/whisptray.py
 # C helper library
 C_HELPER_SRC = src/alsa_redirect.c
-C_HELPER_OUTPUT = src/dictate/alsa_redirect.so
+C_HELPER_OUTPUT = src/whisptray/alsa_redirect.so
 
 # Build the package
 package: $(VENV_DIR)/bin/activate
@@ -47,7 +47,7 @@ $(C_HELPER_OUTPUT): $(C_HELPER_SRC)
 install: $(VENV_DIR)/bin/activate $(C_HELPER_OUTPUT)
 	@echo "Installing the package..."
 	$(VENV_DIR)/bin/$(PIP) install .
-	@echo "Installation complete. Run with '$(VENV_DIR)/bin/dictate' or activate venv and run 'dictate'"
+	@echo "Installation complete. Run with '$(VENV_DIR)/bin/whisptray' or activate venv and run 'whisptray'"
 
 # Install for development (editable mode) and include dev dependencies
 develop: $(VENV_DIR)/bin/activate $(C_HELPER_OUTPUT)
@@ -57,8 +57,8 @@ develop: $(VENV_DIR)/bin/activate $(C_HELPER_OUTPUT)
 
 # Run the application (assumes it's installed in the venv)
 run: $(VENV_DIR)/bin/activate
-	@echo "Running dictate app..."
-	$(VENV_DIR)/bin/dictate
+	@echo "Running whisptray app..."
+	$(VENV_DIR)/bin/whisptray
 
 # Run checks (linting, formatting, type checking) for Python files
 check: $(VENV_DIR)/bin/activate
@@ -86,7 +86,7 @@ clean:
 	@echo "Clean complete."
 
 help:
-	@echo "Makefile for Dictate App"
+	@echo "Makefile for whisptray App"
 	@echo ""
 	@echo "Usage:"
 	@echo "  make check           Run linting, formatting checks, and type checking for Python files."

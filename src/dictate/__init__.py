@@ -1,4 +1,4 @@
-"""Dictate using your microphone to produce keyboard input."""
+"""whisptray using your microphone to produce keyboard input."""
 
 import argparse
 import ctypes
@@ -342,7 +342,7 @@ class SpeechToKeys:
 
         self.recorder = speech_recognition.Recognizer()
         self.recorder.energy_threshold = energy_threshold
-        # Don't let it change, because eventually it will dictate noise.
+        # Don't let it change, because eventually it will whisptray noise.
         self.recorder.dynamic_energy_threshold = False
 
         with self.source:
@@ -510,9 +510,9 @@ class SpeechToKeys:
         self.dictation_active = value
 
 
-class DictateGui:
+class whisptrayGui:
     """
-    Class to run the Dictate App.
+    Class to run the whisptray App.
     """
 
     # pylint: disable=too-many-arguments,too-many-positional-arguments
@@ -539,7 +539,7 @@ class DictateGui:
 
     def run(self):
         """
-        Runs the Dictate App.
+        Runs the whisptray App.
         """
         logging.debug("Calling app_icon.run().")
         self.app_icon.run()
@@ -554,12 +554,12 @@ class DictateGui:
         if self.speech_to_keys.enabled:
             logging.debug("Dictation started by toggle.")
             if self.app_icon:
-                self.app_icon.icon = DictateGui._create_tray_image("record")
+                self.app_icon.icon = whisptrayGui._create_tray_image("record")
 
         else:
             logging.debug("Dictation stopped by toggle.")
             if self.app_icon:
-                self.app_icon.icon = DictateGui._create_tray_image("stop")
+                self.app_icon.icon = whisptrayGui._create_tray_image("stop")
             # Consider stopping the listener if you want to save resources,
             # but be careful about restarting it correctly.
             # For now, we just set dictation_active to False and the callback/processing
@@ -584,7 +584,7 @@ class DictateGui:
         """Sets up and runs the system tray icon."""
         logging.debug("setup_tray_icon called.")
         # Initial icon is 'stop' since dictation_active is False initially
-        icon_image = DictateGui._create_tray_image("stop")
+        icon_image = whisptrayGui._create_tray_image("stop")
 
         if pystray.Icon.HAS_DEFAULT_ACTION:
             menu = pystray.Menu(
@@ -605,7 +605,7 @@ class DictateGui:
                 pystray.MenuItem("Exit", self.exit_program),
             )
 
-        self.app_icon = pystray.Icon("dictate_app", icon_image, "Dictate App", menu)
+        self.app_icon = pystray.Icon("whisptray_app", icon_image, "whisptray App", menu)
         logging.debug("pystray.Icon created.")
 
     @staticmethod
@@ -695,7 +695,7 @@ class DictateGui:
 
     def _initialize_double_click_interval(self):
         """Initializes the double-click interval, falling back to default if needed."""
-        system_interval = DictateGui._get_system_double_click_time()
+        system_interval = whisptrayGui._get_system_double_click_time()
         if (
             system_interval is not None and 0.1 <= system_interval <= 2.0
         ):  # Sanity check interval
@@ -737,8 +737,8 @@ class DictateGui:
                 root = tkinter.Tk()
                 root.withdraw()  # Hide the main window
                 proceed_to_exit = tkinter.messagebox.askyesno(
-                    title="Exit Dictate App?",
-                    message="Are you sure you want to exit Dictate App?",
+                    title="Exit whisptray App?",
+                    message="Are you sure you want to exit whisptray App?",
                 )
                 root.destroy()  # Clean up the hidden root window
             except (tkinter.TclError, RuntimeError) as e:
@@ -797,7 +797,7 @@ class DictateGui:
 
 def main():
     """
-    Main function to run the Dictate App.
+    Main function to run the whisptray App.
     """
     args = parse_args()
     configure_logging(args.verbose)
@@ -813,7 +813,7 @@ def main():
     if not args.non_english and model_name not in ["large", "turbo"]:
         model_name += ".en"
 
-    gui = DictateGui(
+    gui = whisptrayGui(
         args.mic,
         model_name,
         args.energy_threshold,

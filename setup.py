@@ -35,7 +35,7 @@ def get_pkg_config_flags(package_name, option):
         return []
 
 alsa_redirect_extension = Extension(
-    'dictate.alsa_redirect',
+    'whisptray.alsa_redirect',
     sources=['src/alsa_redirect.c'],
     include_dirs=get_pkg_config_flags('alsa', '--cflags-only-I'),
     library_dirs=get_pkg_config_flags('alsa', '--libs-only-L'),

@@ -1,4 +1,4 @@
-# Dictate App
+# whisptray App
 
 A simple dictation program that uses OpenAI's Whisper for speech-to-text, 
 `pynput` for simulating keyboard input, and `pystray` for a system tray icon.
@@ -14,8 +14,8 @@ A simple dictation program that uses OpenAI's Whisper for speech-to-text,
 
 1. Clone this repository:
    ```bash
-   git clone https://github.com/yourusername/dictate_app.git # Replace with your repo URL
-   cd dictate_app
+   git clone https://github.com/yourusername/whisptray_app.git # Replace with your repo URL
+   cd whisptray_app
    ```
 
 2. It is recommended to use a virtual environment:
@@ -25,7 +25,7 @@ A simple dictation program that uses OpenAI's Whisper for speech-to-text,
    ```
 
 3. Install the package:
-   This will install the `dictate` command and its dependencies.
+   This will install the `whisptray` command and its dependencies.
    ```bash
    pip install .
    ```
@@ -75,10 +75,10 @@ A simple dictation program that uses OpenAI's Whisper for speech-to-text,
 
 ## Usage
 
-Once installed, you can run the application using the `dictate` command:
+Once installed, you can run the application using the `whisptray` command:
 
 ```bash
-dictate
+whisptray
 ```
 
 A tray icon will appear. Click the icon to see options:
@@ -90,7 +90,7 @@ A tray icon will appear. Click the icon to see options:
 You can customize the behavior using command-line arguments:
 
 ```bash
-dictate --model small --energy_threshold 1200
+whisptray --model small --energy_threshold 1200
 ```
 
 Available arguments:
@@ -99,7 +99,7 @@ Available arguments:
 - `--energy_threshold`: Energy level for mic to detect (default: 1000).
 - `--record_timeout`: How real-time the recording is in seconds (default: 2.0).
 - `--phrase_timeout`: Silence duration before a new phrase is considered (default: 3.0).
-- `--default_microphone` (Linux only): Name or part of the name of the microphone to use (default: 'pulse'). Use `dictate --default_microphone list` to see available microphones.
+- `--default_microphone` (Linux only): Name or part of the name of the microphone to use (default: 'pulse'). Use `whisptray --default_microphone list` to see available microphones.
 
 ## Development
 
