@@ -1,3 +1,4 @@
+"""Dictate using your microphone to produce keyboard input."""
 import argparse
 import ctypes
 import ctypes.util
@@ -7,9 +8,16 @@ import subprocess
 import threading
 import time
 from datetime import datetime, timedelta, timezone
-from queue import Queue
+from queue import Queue, Empty
 from sys import platform
 from time import sleep
+import numpy as np
+import speech_recognition
+import torch
+import whisper
+from PIL import Image, ImageDraw
+from pynput.keyboard import Controller as KeyboardController
+from pynput.keyboard import Key
 
 # Conditional import for tkinter
 try:
@@ -24,37 +32,32 @@ except ImportError:
 if "linux" in platform:
     os.environ["PYSTRAY_BACKEND"] = "xorg"
 
-import numpy as np
+# pylint: disable=wrong-import-position
 import pystray
-import speech_recognition as sr
-import torch
-import whisper
-from PIL import Image, ImageDraw
-from pynput.keyboard import Controller as KeyboardController
-from pynput.keyboard import Key
 
-# --- Global Variables ---
-keyboard = KeyboardController()
-dictation_active = False
-app_icon = None
-audio_model = None
-recorder = None
-source = None
-data_queue = Queue[bytes]()
-phrase_time = None
-phrase_bytes = b""
-transcription_history = [""]  # Stores the history of transcriptions
-last_click_time = 0.0
-click_timer = None  # Will be a threading.Timer
-EFFECTIVE_DOUBLE_CLICK_INTERVAL = 0.5  # Default in seconds, updated by system settings
-app_is_exiting = threading.Event()
+# Conditional import for tkinter
+try:
+    import tkinter
+    import tkinter.messagebox
+
+    TKINTER_AVAILABLE = True
+except ImportError:
+    TKINTER_AVAILABLE = False
 
 # --- Configuration ---
-MODEL_NAME = "turbo"
-ENERGY_THRESHOLD = 1000
-RECORD_TIMEOUT = 2.0  # Seconds for real-time recording
-PHRASE_TIMEOUT = 3.0  # Seconds of silence before new line
-DEFAULT_MICROPHONE = "pulse"  # For Linux
+DEFAULT_MODEL_NAME = "turbo"
+DEFAULT_ENERGY_THRESHOLD = 1000
+DEFAULT_RECORD_TIMEOUT = 2.0  # Seconds for real-time recording
+DEFAULT_PHRASE_TIMEOUT = 3.0  # Seconds of silence before new line
+DEFAULT_MICROPHONE = "default"  # For Linux
+
+# --- Global Variables ---
+APP_ICON = None
+SPEECH_TO_KEYS = None
+LAST_CLICK_TIME = 0.0
+CLICK_TIMER = None
+EFFECTIVE_DOUBLE_CLICK_INTERVAL = 0.5  # Default in seconds, updated by system settings
+APP_IS_EXITING = threading.Event()
 
 # --- ALSA Error Handling Setup ---
 # Define the Python callback function signature for ctypes
@@ -101,8 +104,10 @@ def python_alsa_error_handler(file_ptr, line, func_ptr, err, formatted_msg_ptr):
         )
 
         # Using python logging to output ALSA messages
-        alsa_logger.info(f"{file}:{line} ({function}) - err {err}: {formatted_msg}")
-    except Exception as e:
+        alsa_logger.info(
+            "%s:%d (%s) - err %d: %s", file, line, function, err, formatted_msg
+        )
+    except (UnicodeDecodeError, AttributeError, TypeError, ValueError) as e:
         # Fallback logging if there's an error within the error handler itself
         print(f"Error in python_alsa_error_handler: {e}")
 
@@ -129,13 +134,14 @@ def setup_alsa_error_handler():
                 logging.info("Loaded alsa_redirect.so from system path.")
             except OSError:
                 logging.error(
-                    f"alsa_redirect.so not found at {c_redirect_lib_path} or in system"
-                    " paths. ALSA logs will not be redirected."
+                    "alsa_redirect.so not found at %s or in system paths. ALSA logs"
+                    " will not be redirected.",
+                    c_redirect_lib_path,
                 )
                 return
         else:
             c_redirect_lib = ctypes.CDLL(c_redirect_lib_path)
-            logging.info(f"Loaded alsa_redirect.so from: {c_redirect_lib_path}")
+            logging.info("Loaded alsa_redirect.so from: %s", c_redirect_lib_path)
 
         # 2. Define argtypes and restype for functions in alsa_redirect.so
         # void register_python_alsa_callback(python_callback_func_t callback);
@@ -159,7 +165,7 @@ def setup_alsa_error_handler():
         ret = c_redirect_lib.initialize_alsa_error_handling()
         if ret < 0:
             logging.error(
-                f"C library failed to set ALSA error handler. Error code: {ret}"
+                "C library failed to set ALSA error handler. Error code: %d", ret
             )
         else:
             logging.info("C library successfully set ALSA error handler.")
@@ -182,17 +188,17 @@ def setup_alsa_error_handler():
                         )
                 else:
                     logging.warning("libasound not found, skipping ALSA test call.")
-            except Exception as e_test:
-                logging.debug(f"Exception during ALSA test call: {e_test}")
+            except (OSError, AttributeError, ctypes.ArgumentError) as e_test:
+                logging.debug("Exception during ALSA test call: %s", e_test)
 
-    except Exception as e:
-        logging.error(f"Error setting up ALSA error handler: {e}", exc_info=True)
+    except (OSError, AttributeError, TypeError, ValueError, ctypes.ArgumentError) as e:
+        logging.error("Error setting up ALSA error handler: %s", e, exc_info=True)
 
 
 def _get_system_double_click_time() -> float | None:
     """Tries to get the system's double-click time in seconds."""
     try:
-        if platform == "linux" or platform == "linux2":
+        if platform in ("linux", "linux2"):
             # Try GSettings first (common in GNOME-based environments)
             try:
                 proc = subprocess.run(
@@ -268,8 +274,9 @@ def _get_system_double_click_time() -> float | None:
         ValueError,
         IndexError,
         subprocess.TimeoutExpired,
+        OSError,
     ) as e:
-        logging.warning(f"Could not query system double-click time: {e}")
+        logging.warning("Could not query system double-click time: %s", e)
     return None
 
 
@@ -282,13 +289,12 @@ def initialize_double_click_interval():
     ):  # Sanity check interval
         EFFECTIVE_DOUBLE_CLICK_INTERVAL = system_interval
         logging.info(
-            "Using system double-click interval:"
-            f" {EFFECTIVE_DOUBLE_CLICK_INTERVAL:.2f}s"
+            "Using system double-click interval: %.2fs", EFFECTIVE_DOUBLE_CLICK_INTERVAL
         )
     else:
         logging.info(
-            "Using default double-click interval:"
-            f" {EFFECTIVE_DOUBLE_CLICK_INTERVAL:.2f}s"
+            "Using default double-click interval: %.2fs",
+            EFFECTIVE_DOUBLE_CLICK_INTERVAL,
         )
 
 
@@ -317,133 +323,29 @@ def create_tray_image(width, height, shape_color, shape_type):
     return image
 
 
-def record_callback(_, audio: sr.AudioData) -> None:
-    """
-    Threaded callback function to receive audio data when recordings finish.
-    audio: An AudioData containing the recorded bytes.
-    """
-    global data_queue
-    if dictation_active:
-        data = audio.get_raw_data()
-        data_queue.put(data)
-
-
-def process_audio():
-    """Processes audio from the queue and performs transcription."""
-    global phrase_time, phrase_bytes, transcription_history, audio_model, app_icon
-
-    while True:
-        if not dictation_active:
-            sleep(0.1)
-            continue
-
-        try:
-            now = datetime.now(timezone.utc)
-            if not data_queue.empty():
-                logging.debug(f"Processing audio from queue at {now}")
-                phrase_complete = False
-                if phrase_time and now - phrase_time > timedelta(
-                    seconds=PHRASE_TIMEOUT
-                ):
-                    phrase_bytes = b""
-                    phrase_complete = True
-                phrase_time = now
-
-                # Combine audio data from queue. Create a temporary list to avoid issues
-                # if data_queue is modified during iteration.
-                temp_audio_list = []
-                while not data_queue.empty():
-                    try:
-                        temp_audio_list.append(data_queue.get_nowait())
-                    except data_queue.Empty:
-                        # Should not happen if initial check was true, but good for
-                        # safety
-                        break
-
-                audio_data = b"".join(temp_audio_list)
-                phrase_bytes += audio_data
-
-                if not phrase_bytes:  # Skip if no audio data
-                    sleep(0.1)
-                    continue
-
-                audio_np = (
-                    np.frombuffer(phrase_bytes, dtype=np.int16).astype(np.float32)
-                    / 32768.0
-                )
-
-                if audio_model:
-                    result = audio_model.transcribe(
-                        audio_np, fp16=torch.cuda.is_available()
-                    )
-                    text = result["text"].strip()
-                    logging.debug(f"Transcribed text: '{text}'")
-
-                    if text:  # Only process if there is new text
-                        if phrase_complete:
-                            # New phrase, type with a space if previous text exists and
-                            # doesn't end with space
-                            if transcription_history[-1] and not transcription_history[
-                                -1
-                            ].endswith(" "):
-                                keyboard.type(" ")
-                            keyboard.type(text)
-                            transcription_history.append(text)
-                        else:
-                            # Continuing a phrase.
-                            # Need to "backspace" the previous part of this phrase and
-                            # type the new full phrase. This is a simplification. A more
-                            # robust solution would be to diff the text.
-                            if transcription_history and transcription_history[-1]:
-                                for _ in range(len(transcription_history[-1])):
-                                    keyboard.press(Key.backspace)
-                                    keyboard.release(Key.backspace)
-                            keyboard.type(text)
-                            transcription_history[-1] = text
-                else:
-                    logging.warning("Audio model not loaded yet.")
-            else:
-                sleep(0.1)  # More responsive sleep
-        except Exception as e:
-            logging.error(f"Error in process_audio: {e}", exc_info=True)
-            sleep(0.1)
-
-
-def toggle_dictation(icon, item):
+def toggle_dictation():
     """Toggles dictation on/off."""
-    global dictation_active, recorder, source, app_icon
-    logging.debug(f"toggle_dictation called. Current state: {dictation_active}")
-    dictation_active = not dictation_active
-    if dictation_active:
+    global SPEECH_TO_KEYS, APP_ICON
+    logging.debug("toggle_dictation called. Current state: %s", SPEECH_TO_KEYS.enabled)
+    SPEECH_TO_KEYS.enabled = not SPEECH_TO_KEYS.enabled
+    if SPEECH_TO_KEYS.enabled:
         logging.debug("Dictation started by toggle.")
-        if app_icon:
-            app_icon.icon = create_tray_image(64, 64, "red", shape_type="stop")
-        # The background listener is already started in main().
-        # We just need to ensure data is cleared for a fresh start.
-        # Clear previous phrase data to avoid re-typing old text
-        global phrase_bytes, phrase_time, transcription_history, data_queue
-        phrase_bytes = b""
-        phrase_time = None
-        transcription_history = [""]
-        while not data_queue.empty():  # Clear the queue
-            try:
-                data_queue.get_nowait()
-            except data_queue.Empty:
-                break
+        if APP_ICON:
+            APP_ICON.icon = create_tray_image(64, 64, "red", shape_type="stop")
 
     else:
         logging.debug("Dictation stopped by toggle.")
-        if app_icon:
-            app_icon.icon = create_tray_image(64, 64, "red", shape_type="record")
+        if APP_ICON:
+            APP_ICON.icon = create_tray_image(64, 64, "red", shape_type="record")
         # Consider stopping the listener if you want to save resources,
         # but be careful about restarting it correctly.
         # For now, we just set dictation_active to False and the callback/processing
         # will ignore new data.
 
 
-def show_exit_dialog_actual(icon_instance=None):  # Parameter for pystray callback
+def show_exit_dialog_actual():
     """Shows an exit confirmation dialog or exits directly."""
-    global app_icon, click_timer
+    global APP_ICON, CLICK_TIMER
     logging.debug("show_exit_dialog_actual called.")
 
     proceed_to_exit = False
@@ -457,9 +359,9 @@ def show_exit_dialog_actual(icon_instance=None):  # Parameter for pystray callba
                 message="Are you sure you want to exit Dictate App?",
             )
             root.destroy()  # Clean up the hidden root window
-        except Exception as e:
+        except (tkinter.TclError, RuntimeError) as e:
             logging.warning(
-                f"Could not display tkinter exit dialog: {e}. Exiting directly."
+                "Could not display tkinter exit dialog: %s. Exiting directly.", e
             )
             proceed_to_exit = True  # Fallback to exit if dialog fails
     else:
@@ -467,73 +369,70 @@ def show_exit_dialog_actual(icon_instance=None):  # Parameter for pystray callba
         proceed_to_exit = True
 
     if proceed_to_exit:
-        exit_program(app_icon, None)  # app_icon might be None if called early
+        exit_program()  # app_icon might be None if called early
     else:
         logging.debug("Exit cancelled by user.")
 
 
 def delayed_single_click_action(icon_instance):
     """Action to perform for a single click after the double-click window."""
-    if app_is_exiting.is_set():  # Don't toggle if we are already exiting
+    if APP_IS_EXITING.is_set():  # Don't toggle if we are already exiting
         return
     logging.debug("Delayed single click action triggered.")
-    toggle_dictation(icon_instance, None)  # Parameter for pystray callback consistency
+    toggle_dictation()
 
 
 def icon_clicked_handler(icon_instance, item=None):  # item unused but pystray passes it
     """Handles icon clicks to differentiate single vs double clicks."""
-    global last_click_time, click_timer
+    global LAST_CLICK_TIME, CLICK_TIMER
     current_time = time.monotonic()
-    logging.debug(f"Icon clicked at {current_time}")
+    logging.debug("Icon clicked at %s", current_time)
 
     if (
-        click_timer and click_timer.is_alive()
+        CLICK_TIMER and CLICK_TIMER.is_alive()
     ):  # Timer is active, so this is a second click
-        click_timer.cancel()
-        click_timer = None
-        last_click_time = 0.0  # Reset for next sequence
+        CLICK_TIMER.cancel()
+        CLICK_TIMER = None
+        LAST_CLICK_TIME = 0.0  # Reset for next sequence
         logging.debug("Double click detected.")
-        show_exit_dialog_actual(icon_instance)
+        show_exit_dialog_actual()
     else:  # First click or click after timer expired
-        last_click_time = current_time
-        if click_timer:
-            click_timer.cancel()  # Cancel any old timer, though it should be None here
+        LAST_CLICK_TIME = current_time
+        if CLICK_TIMER:
+            CLICK_TIMER.cancel()  # Cancel any old timer, though it should be None here
 
-        click_timer = threading.Timer(
+        CLICK_TIMER = threading.Timer(
             EFFECTIVE_DOUBLE_CLICK_INTERVAL,
             delayed_single_click_action,
             args=[icon_instance],
         )
-        click_timer.daemon = True  # Ensure timer doesn't block exit
-        click_timer.start()
-        logging.debug(f"Started click timer for {EFFECTIVE_DOUBLE_CLICK_INTERVAL}s")
+        CLICK_TIMER.daemon = True  # Ensure timer doesn't block exit
+        CLICK_TIMER.start()
+        logging.debug("Started click timer for %ss", EFFECTIVE_DOUBLE_CLICK_INTERVAL)
 
 
-def exit_program(icon, item):
+def exit_program():
     """Stops the program."""
-    global dictation_active, app_icon, recorder, click_timer
+    global APP_ICON, CLICK_TIMER
     logging.debug("exit_program called.")
-    app_is_exiting.set()  # Signal that we are exiting
+    APP_IS_EXITING.set()  # Signal that we are exiting
 
-    if click_timer and click_timer.is_alive():
-        click_timer.cancel()
+    if CLICK_TIMER and CLICK_TIMER.is_alive():
+        CLICK_TIMER.cancel()
         logging.debug("Cancelled pending click_timer on exit.")
-    click_timer = None
+    CLICK_TIMER = None
+    SPEECH_TO_KEYS.exit()
 
-    dictation_active = False
-    if recorder and hasattr(recorder, "stop_listening"):  # Check if listening
-        logging.debug("Stopping recorder listener.")
-        recorder.stop_listening(wait_for_stop=False)
-    if app_icon:
-        logging.debug("Stopping app_icon.")
-        app_icon.stop()
-    logging.info("Exiting application via os._exit(0).")
-    os._exit(0)  # Force exit if threads are hanging
+    if APP_ICON:
+        logging.debug("Disabling tray icon.")
+        APP_ICON.stop()
+    # logging.info("Exiting application via os._exit(0).")
+    # os._exit(0)  # Force exit if threads are hanging
 
 
 def setup_tray_icon():
     """Sets up and runs the system tray icon."""
-    global app_icon
+    global APP_ICON
     logging.debug("setup_tray_icon called.")
     # Initial icon is 'record' since dictation_active is False initially
     icon_image = create_tray_image(64, 64, "red", shape_type="record")
@@ -553,49 +452,36 @@ def setup_tray_icon():
         menu = pystray.Menu(
             pystray.MenuItem(
                 "Toggle Dictation",
-                lambda: toggle_dictation(
-                    app_icon, None
-                ),  # Ensure lambda for direct call if needed
-                checked=lambda item: dictation_active,
+                lambda _1, _2: toggle_dictation(),
+                checked=lambda item: SPEECH_TO_KEYS.enabled,
             ),
             pystray.MenuItem(
-                "Exit", lambda: exit_program(app_icon, None)
+                "Exit", lambda: exit_program(APP_ICON, None)
             ),  # Ensure lambda
         )
 
-    app_icon = pystray.Icon("dictate_app", icon_image, "Dictate App", menu)
+    APP_ICON = pystray.Icon("dictate_app", icon_image, "Dictate App", menu)
     logging.debug("pystray.Icon created. Calling app_icon.run().")
-    app_icon.run()
+    APP_ICON.run()
     logging.debug(
         "app_icon.run() finished."
     )  # Should not be reached if os._exit is called
 
 
-def main():
-    global audio_model
-    global recorder
-    global source
-    global MODEL_NAME
-    global ENERGY_THRESHOLD
-    global RECORD_TIMEOUT
-    global PHRASE_TIMEOUT
-    global DEFAULT_MICROPHONE
-
-    # Configure logging first
-    # The default logging level will be WARNING.
-    # If -v or --verbose is passed, it will be set to INFO.
-    # The initial basicConfig is minimal, we'll add handlers and formatters later
-    # if verbose is specified, or rely on the default print for critical errors
-    # if not.
-    logging.basicConfig(level=logging.WARNING)  # Set a default level
-    initialize_double_click_interval()  # Initialize before parser for logging
-
+def parse_args():
     parser = argparse.ArgumentParser(
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     parser.add_argument(
+        "--mic",
+        default=DEFAULT_MICROPHONE,
+        help="Default microphone name for SpeechRecognition. "
+        "Run this with 'list' to view available Microphones.",
+        type=str,
+    )
+    parser.add_argument(
         "--model",
-        default=MODEL_NAME,
+        default=DEFAULT_MODEL_NAME,
         help="Model to use",
         choices=["tiny", "base", "small", "medium", "large", "turbo"],
     )
@@ -604,19 +490,19 @@ def main():
     )
     parser.add_argument(
         "--energy_threshold",
-        default=ENERGY_THRESHOLD,
+        default=DEFAULT_ENERGY_THRESHOLD,
         help="Energy level for mic to detect.",
         type=int,
     )
     parser.add_argument(
         "--record_timeout",
-        default=RECORD_TIMEOUT,
+        default=DEFAULT_RECORD_TIMEOUT,
         help="How real time the recording is in seconds.",
         type=float,
     )
     parser.add_argument(
         "--phrase_timeout",
-        default=PHRASE_TIMEOUT,
+        default=DEFAULT_PHRASE_TIMEOUT,
         help="How much empty space between recordings before we "
         "consider it a new line in the transcription.",
         type=float,
@@ -636,7 +522,10 @@ def main():
             type=str,
         )
     args = parser.parse_args()
+    return args
 
+
+def configure_logging(args):
     # Configure logging properly based on verbosity
     # Remove all handlers associated with the root logger object.
     for handler in logging.root.handlers[:]:
@@ -667,94 +556,231 @@ def main():
     else:
         logging.info("Skipping ALSA error handler setup on non-Linux platform.")
 
-    MODEL_NAME = args.model
-    ENERGY_THRESHOLD = args.energy_threshold
-    RECORD_TIMEOUT = args.record_timeout
-    PHRASE_TIMEOUT = args.phrase_timeout
+
+def open_source(mic_name: str):
+    assert mic_name
+
+    result = None
     if "linux" in platform:
-        DEFAULT_MICROPHONE = args.default_microphone
-
-    if not args.non_english and MODEL_NAME not in ["large", "turbo"]:
-        temp = ".en"
-    else:
-        temp = ""
-
-    # Load Whisper model
-    logging.info(f"Loading Whisper model: {MODEL_NAME}{temp}")
-    effective_model_name = MODEL_NAME
-    if MODEL_NAME not in ["large", "turbo"] and not args.non_english:
-        effective_model_name = MODEL_NAME + ".en"
-
-    try:
-        audio_model = whisper.load_model(effective_model_name)
-        logging.info("Whisper model loaded successfully.")
-    except Exception as e:
-        logging.error(f"Error loading Whisper model: {e}", exc_info=True)
-        return
-
-    # Setup SpeechRecognition
-    recorder = sr.Recognizer()
-    recorder.energy_threshold = ENERGY_THRESHOLD
-    recorder.dynamic_energy_threshold = (
-        False  # Required for manual energy_threshold setting
-    )
-
-    if "linux" in platform:
-        mic_name = DEFAULT_MICROPHONE
-        if not mic_name or mic_name == "list":
+        for index, name in enumerate(speech_recognition.Microphone.list_microphone_names()):
+            if mic_name in name:
+                result = speech_recognition.Microphone(sample_rate=16000, device_index=index)
+                logging.info("Using microphone: %s", name)
+                break
+        if result is None:
+            logging.error(
+                "Microphone containing '%s' not found. Please check available"
+                " microphones.",
+                mic_name,
+            )
             logging.info("Available microphone devices are: ")
-            for index, name in enumerate(sr.Microphone.list_microphone_names()):
-                logging.info(f'Microphone with name "{name}" found')
+            for index, name_available in enumerate(
+                speech_recognition.Microphone.list_microphone_names()
+            ):
+                logging.info('Microphone with name "%s" found', name_available)
             return
-        else:
-            source = None  # Initialize source
-            for index, name in enumerate(sr.Microphone.list_microphone_names()):
-                if mic_name in name:
-                    source = sr.Microphone(sample_rate=16000, device_index=index)
-                    logging.info(f"Using microphone: {name}")
-                    break
-            if source is None:
-                logging.error(
-                    f"Microphone containing '{mic_name}' not found. Please check"
-                    " available microphones."
-                )
-                logging.info("Available microphone devices are: ")
-                for index, name_available in enumerate(
-                    sr.Microphone.list_microphone_names()
-                ):
-                    logging.info(f'Microphone with name "{name_available}" found')
-                return
     else:
-        source = sr.Microphone(sample_rate=16000)
+        result = speech_recognition.Microphone(sample_rate=16000)
         logging.info("Using default microphone.")
 
-    with source:
-        try:
-            recorder.adjust_for_ambient_noise(source, duration=1)  # Adjust for 1 second
-            logging.info("Adjusted for ambient noise.")
-        except Exception as e:
-            logging.warning(f"Could not adjust for ambient noise: {e}", exc_info=True)
-            # Continue without adjustment if it fails
+    return result
 
-    # Start listening in background (but it will only process if dictation_active is
-    # True). We start it here so it's ready, and toggle_dictation controls actual
-    # processing.
-    try:
-        # The callback will now check dictation_active before putting data in queue
-        recorder.listen_in_background(
-            source, record_callback, phrase_time_limit=RECORD_TIMEOUT
+
+class SpeechToKeys:
+    def __init__(self, model_name, energy_threshold, record_timeout, phrase_timeout, source):
+        self.model_name = model_name
+        self.energy_threshold = energy_threshold
+        self.record_timeout = record_timeout
+        self.phrase_timeout = phrase_timeout
+        self.source = source
+        self.data_queue = Queue[bytes]()
+        self.dictation_active = False
+
+        logging.debug("Loading Whisper model: %s", model_name)
+
+        try:
+            self.audio_model = whisper.load_model(model_name)
+            logging.debug("Whisper model loaded successfully.")
+        except (OSError, RuntimeError, ValueError) as e:
+            logging.error("Error loading Whisper model: %s", e, exc_info=True)
+            return
+
+        self.recorder = speech_recognition.Recognizer()
+        self.recorder.energy_threshold = energy_threshold
+        # Don't let it change, because eventually it will dictate noise.
+        self.recorder.dynamic_energy_threshold = False
+
+
+        with self.source:
+            try:
+                self.recorder.adjust_for_ambient_noise(self.source, duration=1)
+                logging.debug("Adjusted for ambient noise.")
+            except (speech_recognition.WaitTimeoutError, OSError, ValueError, AttributeError) as e:
+                logging.warning("Could not adjust for ambient noise: %s", e, exc_info=True)
+                # Continue without adjustment if it fails
+
+        # Start listening in background so it's ready, and
+        # self.dictation_active controls actual processing.
+        try:
+            # The callback will now check dictation_active before putting data in queue
+            self.recorder.listen_in_background(
+                self.source, self.record_callback, phrase_time_limit=self.record_timeout
+            )
+            logging.info("Background listener started.")
+        except (OSError, AttributeError, RuntimeError) as e:
+            logging.error("Error starting background listener: %s", e, exc_info=True)
+            return
+
+        # Start audio processing thread
+        audio_thread = threading.Thread(
+            target=self.process_audio, daemon=True, name="AudioProcessThread"
         )
-        logging.info("Background listener started.")
-    except Exception as e:
-        logging.error(f"Error starting background listener: {e}", exc_info=True)
+        audio_thread.start()
+        logging.info("Audio processing thread started.")
+
+
+    def exit(self):
+        self.enabled = False
+        if self.recorder and hasattr(self.recorder, "stop_listening"):  # Check if listening
+            logging.debug("Stopping recorder listener.")
+            self.recorder.stop_listening(wait_for_stop=False)
+
+    def reset(self):
+        self.phrase_bytes = b""
+        self.phrase_time = None
+        self.transcription_history = [""]
+        while not self.data_queue.empty():  # Clear the queue
+            try:
+                self.data_queue.get_nowait()
+            except Empty:
+                break
+
+
+    def record_callback(self, _, audio: speech_recognition.AudioData) -> None:
+        """
+        Threaded callback function to receive audio data when recordings finish.
+        audio: An AudioData containing the recorded bytes.
+        """
+        if self.dictation_active:
+            data = audio.get_raw_data()
+            self.data_queue.put(data)
+
+    def process_audio(self):
+        """Processes audio from the queue and performs transcription."""
+        while True:
+            if not self.dictation_active:
+                sleep(0.1)
+                continue
+
+            try:
+                now = datetime.now(timezone.utc)
+                if not self.data_queue.empty():
+                    logging.debug("Processing audio from queue at %s", now)
+                    phrase_complete = False
+                    if self.phrase_time and now - self.phrase_time > timedelta(
+                        seconds=DEFAULT_PHRASE_TIMEOUT
+                    ):
+                        self.phrase_bytes = b""
+                        phrase_complete = True
+                    self.phrase_time = now
+
+                    # Combine audio data from queue. Create a temporary list to avoid issues
+                    # if data_queue is modified during iteration.
+                    temp_audio_list = []
+                    while not self.data_queue.empty():
+                        try:
+                            temp_audio_list.append(self.data_queue.get_nowait())
+                        except Empty:
+                            # Should not happen if initial check was true, but good for
+                            # safety
+                            break
+
+                    audio_data = b"".join(temp_audio_list)
+                    self.phrase_bytes += audio_data
+
+                    if not self.phrase_bytes:  # Skip if no audio data
+                        sleep(0.1)
+                        continue
+
+                    audio_np = (
+                        np.frombuffer(self.phrase_bytes, dtype=np.int16).astype(np.float32)
+                        / 32768.0
+                    )
+
+                    if self.audio_model:
+                        result = self.audio_model.transcribe(
+                            audio_np, fp16=torch.cuda.is_available()
+                        )
+                        text = result["text"].strip()
+                        logging.debug("Transcribed text: '%s'", text)
+
+                        if text:  # Only process if there is new text
+                            keyboard = KeyboardController()
+                            if phrase_complete:
+                                # New phrase, type with a space if previous text exists and
+                                # doesn't end with space
+                                if self.transcription_history[-1] and not self.transcription_history[
+                                    -1
+                                ].endswith(" "):
+                                    keyboard.type(" ")
+                                keyboard.type(text)
+                                self.transcription_history.append(text)
+                            else:
+                                # Continuing a phrase.
+                                # Need to "backspace" the previous part of this phrase and
+                                # type the new full phrase. This is a simplification. A more
+                                # robust solution would be to diff the text.
+                                if self.transcription_history and self.transcription_history[-1]:
+                                    for _ in range(len(self.transcription_history[-1])):
+                                        keyboard.press(Key.backspace)
+                                        keyboard.release(Key.backspace)
+                                keyboard.type(text)
+                                self.transcription_history[-1] = text
+                    else:
+                        logging.warning("Audio model not loaded yet.")
+                else:
+                    sleep(0.1)  # More responsive sleep
+            except (Empty, ValueError, TypeError, OSError) as e:
+                logging.error("Error in process_audio: %s", e, exc_info=True)
+                sleep(0.1)
+
+    @property
+    def enabled(self):
+        return self.dictation_active
+
+    @enabled.setter
+    def enabled(self, value):
+        if value and not self.dictation_active:
+            # The background listener is already started in __init__(). We just need to
+            # ensure data is cleared for a fresh start. Clear previous phrase data to
+            # avoid re-typing old text.
+            self.reset()
+        self.dictation_active = value
+
+def main():
+    global SPEECH_TO_KEYS
+    logging.basicConfig(level=logging.WARNING)  # Set a default level
+    initialize_double_click_interval()  # Initialize before parser for logging
+
+    args = parse_args()
+    configure_logging(args)
+
+    if args.mic == "list":
+        logging.info(
+            "Available microphones: %s",
+            ", ".join(speech_recognition.Microphone.list_microphone_names())
+        )
         return
 
-    # Start audio processing thread
-    audio_thread = threading.Thread(
-        target=process_audio, daemon=True, name="AudioProcessThread"
-    )
-    audio_thread.start()
-    logging.info("Audio processing thread started.")
+    source = open_source(args.mic)
+    if source is None:
+        return
+
+    model_name = args.model
+    if not args.non_english and model_name not in ["large", "turbo"]:
+        model_name += ".en"
+
+    SPEECH_TO_KEYS = SpeechToKeys(model_name, args.energy_threshold, args.record_timeout, args.phrase_timeout, source)
 
     # Start tray icon
     logging.info("Starting tray icon...")
