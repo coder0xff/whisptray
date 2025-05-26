@@ -17,6 +17,8 @@ pip install whisptray
 whisptray
 ```
 
+Click the tray icon to toggle dictation. Double click to exit.
+
 You can customize the behavior using command-line arguments:
 
 ```bash
