@@ -1,6 +1,13 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=61.0", "build"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+packages = ["dictate"]
+
+[tool.setuptools.package-data]
+dictate = ["*.so"]
 
 [project]
 name = "dictate"
@@ -14,15 +21,14 @@ authors = [
 ]
 dependencies = [
     "numpy",
-    "SpeechRecognition",
-    "PyAudio",
     "openai-whisper",
-    "torch",
-    "pynput",
     "Pillow",
-    "pystray",
-    "types-pynput", # For pynput type stubs
+    "PyAudio",
     "PyGObject==3.50.1"
+    "pynput",
+    "pystray",
+    "SpeechRecognition",
+    "torch",
 ]
 
 [project.scripts]
@@ -34,12 +40,13 @@ dictate = "dictate:main"
 
 [project.optional-dependencies]
 dev = [
-    "flake8",
     "black",
+    "build"
+    "flake8",
     "isort",
     "mypy",
     "pylint",
-    "types-pynput" # For pynput type stubs
+    "types-pynput",
 ]
 
 [[tool.mypy.overrides]]

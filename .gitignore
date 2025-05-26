@@ -2,3 +2,6 @@
 .venv
 **.egg-info
 **.pyc
+build/
+dist/
+**.so
