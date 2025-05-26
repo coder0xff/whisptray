@@ -38,6 +38,7 @@ dev = [
     "black",
     "isort",
     "mypy",
+    "pylint",
     "types-pynput" # For pynput type stubs
 ]
 

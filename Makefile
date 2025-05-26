@@ -59,6 +59,7 @@ run: $(VENV_DIR)/bin/activate
 check: $(VENV_DIR)/bin/activate
 	@echo "Running checks for Python files..."
 	$(VENV_DIR)/bin/flake8 $(PYTHON_SRC_FILES)
+	$(VENV_DIR)/bin/pylint $(PYTHON_SRC_FILES)
 	$(VENV_DIR)/bin/black --check $(PYTHON_SRC_FILES)
 	$(VENV_DIR)/bin/isort --check-only $(PYTHON_SRC_FILES)
 	$(VENV_DIR)/bin/mypy $(PYTHON_SRC_FILES)
