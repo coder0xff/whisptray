@@ -37,69 +37,6 @@ RECORD_TIMEOUT = 2.0  # Seconds for real-time recording
 PHRASE_TIMEOUT = 3.0  # Seconds of silence before new line
 DEFAULT_MICROPHONE = "pulse"  # For Linux
 
-# --- Global variable to store the C callback instance ---
-# This is crucial to prevent garbage collection of the callback, which would lead to a crash.
-_alsa_error_handler_c_instance = None
-
-# --- ALSA Error Handling via ctypes ---
-def py_alsa_error_handler(c_filename_ptr, c_line, c_function_ptr, c_err, c_format_ptr, *args):
-    """
-    Python callback function to be called by ALSA for error messages.
-    ALSA handler signature: void handler(const char *file, int line, const char *function, int err, const char *fmt, ...)
-    We will try to capture the formatted string if ALSA provides it directly in fmt or handle varargs if needed.
-    For simplicity, we initially assume c_format_ptr might be the already formatted string if varargs are not easily handled.
-    """
-    try:
-        filename = ctypes.string_at(c_filename_ptr).decode('utf-8', 'replace') if c_filename_ptr else "N/A"
-        function = ctypes.string_at(c_function_ptr).decode('utf-8', 'replace') if c_function_ptr else "N/A"
-        # The format string (c_format_ptr) from ALSA might be used with vsprintf internally by ALSA usually.
-        # If ALSA calls this with the *already formatted* string due to some internal wrapping before our handler,
-        # then c_format_ptr would point to it. This is often how it works when redirecting.
-        # For now, we assume c_format_ptr might contain the final message, or just the format string.
-        # A more robust solution would involve trying to format with *args if c_format_ptr is just a format string.
-        # However, python's logging will handle further %-formatting if c_format_ptr contains them.
-        
-        # Let's try to decode the format string / message from ALSA
-        error_message_format = ctypes.string_at(c_format_ptr).decode('utf-8', 'replace') if c_format_ptr else "Unknown ALSA error"
-
-        # Python's logging can handle format strings with arguments if they are passed directly.
-        # So if error_message_format is like "Cannot %s" and args is ("open",), logging handles it.
-        # However, the ALSA ... varargs are not directly translatable to Python *args for logging.
-        # The most reliable part is often the error_message_format if it's already been processed by vsnprintf by ALSA's caller.
-        # For now, let's log the main string and mention other details.
-        
-        alsa_logger = logging.getLogger("ALSA")
-        # Log the primary message. If it's a format string, subsequent Python logging might try to interpret % again.
-        # This should be reasonably safe.
-        full_message = f"ALSA Error: code {c_err} in {function} ({filename}:{c_line}): {error_message_format}"
-        # If ALSA indeed calls this handler with printf-style varargs, args will contain them.
-        # However, they are ctypes objects. For now, we won't try to sophisticatedly format them here.
-        # We'll just indicate if they were present.
-        if args:
-            full_message += f" (raw varargs: {args})"
-        
-        alsa_logger.warning(full_message) # Log as warning or error as appropriate
-
-    except Exception as e:
-        # If our handler itself errors, log to a fallback/default logger
-        logging.getLogger("ALSA_HANDLER_ERROR").error(f"Error in py_alsa_error_handler: {e}", exc_info=True)
-    
-    # ALSA error handlers are void, so no return value is needed.
-    # ctypes.CFUNCTYPE for void return uses None.
-
-
-# Define the C signature for the ALSA error handler callback
-# void handler(const char *file, int line, const char *function, int err, const char *fmt, ...)
-# We capture varargs with *args, but their handling is simplified as noted above.
-ALSA_ERROR_HANDLER_FUNC_TYPE = ctypes.CFUNCTYPE(
-    None,  # Return type: void
-    ctypes.c_char_p,    # const char *file
-    ctypes.c_int,       # int line
-    ctypes.c_char_p,    # const char *function
-    ctypes.c_int,       # int err
-    ctypes.c_char_p     # const char *fmt
-    # Varargs are handled by CFUNCTYPE if the function signature allows *args
-)
 
 # --- Helper Functions ---
 def create_tray_image(width, height, color1, color2):
@@ -275,26 +212,6 @@ def main():
         format="%(asctime)s - %(levelname)s - %(name)s - %(threadName)s - %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
-
-    # --- Setup ALSA error handler redirection ---
-    global _alsa_error_handler_c_instance # To store the callback instance
-    try:
-        alsa_lib_name = ctypes.util.find_library('asound')
-        if alsa_lib_name:
-            alsa = ctypes.CDLL(alsa_lib_name)
-            if hasattr(alsa, 'snd_lib_error_set_handler'):
-                logging.info("Attempting to set ALSA error handler...")
-                c_handler_func = ALSA_ERROR_HANDLER_FUNC_TYPE(py_alsa_error_handler)
-                _alsa_error_handler_c_instance = c_handler_func # Store globally
-                alsa.snd_lib_error_set_handler(c_handler_func)
-                logging.info("ALSA error handler set successfully.")
-            else:
-                logging.warning("ALSA library loaded, but snd_lib_error_set_handler not found.")
-        else:
-            logging.warning("ALSA library (libasound) not found. Cannot redirect ALSA messages.")
-    except Exception as e:
-        logging.error(f"Failed to set ALSA error handler: {e}", exc_info=True)
-    # --- End ALSA error handler setup ---
 
     global audio_model
     global recorder
