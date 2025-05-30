@@ -62,7 +62,7 @@ jobs:
       - name: Build wheels
         env:
           CIBW_BEFORE_BUILD_LINUX: >
-            yum install -y alsa-lib-devel || apt-get update && apt-get install -y libasound2-dev || echo "ALSA dev libs not installed, build might fail if C ext needs them"
+            yum install -y alsa-lib-devel portaudio-devel || (apt-get update && apt-get install -y libasound2-dev libportaudio-dev) || echo "ALSA or PortAudio dev libs not installed, build might fail if C ext needs them"
           CIBW_ARCHS_LINUX: auto aarch64 ppc64le
           CIBW_ARCHS_MACOS: x86_64 arm64
           CIBW_ARCHS_WINDOWS: AMD64 ARM64
