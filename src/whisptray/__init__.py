@@ -524,6 +524,7 @@ class whisptrayGui:
         # Default in seconds, updated by system settings
         self.effective_double_click_interval = 0.5
         self.app_is_exiting = threading.Event()
+        self.app_icon = None # Initialize to None
 
         source = open_microphone(mic_name)
         if source is None:
@@ -535,7 +536,20 @@ class whisptrayGui:
         self._initialize_double_click_interval()
         # Start tray icon
         logging.debug("Starting tray icon...")
-        self._setup_tray_icon()  # This will block until exit
+        self._setup_tray_icon()  # This will set self.app_icon
+
+        # Start icon health check thread
+        if self.app_icon:
+            self.health_check_thread = threading.Thread(
+                target=self._icon_health_check, daemon=True, name="IconHealthCheckThread"
+            )
+            self.health_check_thread.start()
+            logging.debug("Icon health check thread started.")
+        else:
+            logging.error(
+                "App icon not initialized properly. Health check thread not started. "
+                "The application might not function correctly."
+            )
 
     def run(self):
         """
@@ -568,6 +582,9 @@ class whisptrayGui:
     def exit_program(self):
         """Stops the program."""
         logging.debug("exit_program called.")
+        if self.app_is_exiting.is_set():
+            return
+
         self.app_is_exiting.set()  # Signal that we are exiting
 
         if self.click_timer and self.click_timer.is_alive():
@@ -793,6 +810,40 @@ class whisptrayGui:
             logging.debug(
                 "Started click timer for %ss", self.effective_double_click_interval
             )
+
+    def _handle_thread_exception(self, args):
+        """Handles exceptions in threads."""
+        thread_name = threading.current_thread().name
+        logging.error(
+            f"Exception in thread '{thread_name}': {args[1]}. Initiating application exit.",
+            exc_info=True
+        )
+        self.exit_program()
+
+    def _icon_health_check(self):
+        """Periodically checks the health of the pystray icon and exits on failure."""
+        if not self.app_icon:
+            logging.warning("Icon health check: app_icon is None at start. Thread exiting.")
+            return
+
+        logging.debug("Icon health check loop starting.")
+        while not self.app_is_exiting.is_set():
+            try:
+                # The act of getting and setting the icon can reveal issues with pystray.
+                current_icon_image = self.app_icon.icon
+                self.app_icon.icon = current_icon_image
+            except Exception as e:  # Catching a broad exception as pystray errors can be varied
+                logging.error(
+                    "Pystray icon health check failed: %s. Initiating application exit.",
+                    e,
+                    exc_info=True
+                )
+                self.exit_program()
+                break  # Exit health check loop
+
+            time.sleep(1)  # Check every second
+
+        logging.debug("Icon health check loop finished.")
 
 
 def main():
