@@ -13,6 +13,7 @@ import whisper
 from pynput.keyboard import Controller as KeyboardController
 from pynput.keyboard import Key
 from pynput.keyboard import Listener as KeyboardListener
+from pynput.mouse import Listener as MouseListener
 
 
 # pylint: disable=too-many-instance-attributes
@@ -39,9 +40,11 @@ class SpeechToKeys:
         self.phrase_bytes = b""
         self.phrase_time = None
         self.buffer = ""
+        self.is_first_phrase = True
         self.dictation_active = False
         self.keyboard = KeyboardController()
         self._keyboard_listener = None
+        self._mouse_listener = None
         self._is_programmatic_typing = False  # Flag to indicate programmatic typing
         self._stop_listening_callback = None  # For the background audio listener
 
@@ -103,6 +106,7 @@ class SpeechToKeys:
         self.phrase_bytes = b""
         self.phrase_time = None
         self.buffer = ""
+        self.is_first_phrase = True
         while not self.data_queue.empty():  # Clear the queue
             try:
                 self.data_queue.get_nowait()
@@ -128,6 +132,16 @@ class SpeechToKeys:
         logging.debug("User key press detected. %s", key)
         self._reset()
 
+    def _on_click(self, x, y, button, pressed):
+        """Callback for mouse listener."""
+        # We only care about button presses, not releases
+        if not pressed:
+            return
+
+        # We don't need to know which button, just that a click occurred.
+        logging.debug("User mouse click detected. x=%s, y=%s, button=%s", x, y, button)
+        self._reset()
+
     def _start_keyboard_listener(self):
         if self._keyboard_listener is None:
             logging.debug("Starting keyboard listener.")
@@ -145,6 +159,24 @@ class SpeechToKeys:
             logging.debug("Keyboard listener stopped.")
         else:
             logging.debug("Keyboard listener not running or already stopped.")
+
+    def _start_mouse_listener(self):
+        if self._mouse_listener is None:
+            logging.debug("Starting mouse listener.")
+            self._mouse_listener = MouseListener(on_click=self._on_click)
+            self._mouse_listener.start()
+            logging.debug("Mouse listener started.")
+        else:
+            logging.debug("Mouse listener already running.")
+
+    def _stop_mouse_listener(self):
+        if self._mouse_listener is not None:
+            logging.debug("Stopping mouse listener.")
+            self._mouse_listener.stop()
+            self._mouse_listener = None
+            logging.debug("Mouse listener stopped.")
+        else:
+            logging.debug("Mouse listener not running or already stopped.")
 
     def _process_audio(self):
         """Processes audio from the queue and performs transcription."""
@@ -196,6 +228,9 @@ class SpeechToKeys:
                 audio_samples, fp16=torch.cuda.is_available()
             )
             text = result["text"]
+            if self.is_first_phrase:
+                text = text.lstrip()  # There was no previous phrase, so remove any
+                # leading whitespace that the transcription might have added.
             logging.debug("Transcribed text: '%s'", text)  # Can be very verbose
 
             if text:
@@ -207,6 +242,7 @@ class SpeechToKeys:
                         self.keyboard.type(".")
                     self.keyboard.type(text)
                     self.buffer = text
+                    self.is_first_phrase = False
                 else:
                     if self.buffer:
                         # find the first index where the text and buffer differ
@@ -220,11 +256,10 @@ class SpeechToKeys:
                         )
                         for _ in range(index, len(self.buffer)):
                             self.keyboard.press(Key.backspace)
-                            sleep(
-                                0.01
-                            )  # Web pages sometimes struggle with fast keystrokes.
+                            # Web pages sometimes struggle with fast keystrokes.
+                            sleep(0.001)
                             self.keyboard.release(Key.backspace)
-                            sleep(0.01)
+                            sleep(0.001)
                     else:
                         index = 0
 
@@ -262,6 +297,7 @@ class SpeechToKeys:
                 self._stop_listening_callback is None
             ), "Stop listening callback should be None"
             self._start_keyboard_listener()
+            self._start_mouse_listener()
             self._adjust_ambient_noise()
 
             self._reset()
@@ -279,11 +315,13 @@ class SpeechToKeys:
                     "Error starting background audio listener: %s", e, exc_info=True
                 )
                 self._stop_keyboard_listener()
+                self._stop_mouse_listener()
                 return
 
         else:
             self.dictation_active = False  # Set this first
             self._stop_keyboard_listener()  # Stop keyboard listener
+            self._stop_mouse_listener()  # Stop mouse listener
 
             assert (
                 self._stop_listening_callback is not None
