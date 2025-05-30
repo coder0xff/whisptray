@@ -65,11 +65,11 @@ jobs:
           # More modern images might use dnf or apt. cibuildwheel handles this well.
           # We'll try a common set; adjust if specific images need different commands.
           CIBW_BEFORE_BUILD_LINUX: >
-            yum install -y alsa-lib-devel || apt-get update && apt-get install -y libasound2-dev || echo "ALSA dev libs not installed, build might fail if C ext needs them"
+            yum install -y alsa-lib-devel portaudio-devel || (apt-get update && apt-get install -y libasound2-dev libportaudio-dev) || echo "ALSA or PortAudio dev libs not installed, build might fail if C ext needs them"
           CIBW_ARCHS_LINUX: auto aarch64 ppc64le # Build for x86_64, arm64, ppc64le on Linux
           CIBW_ARCHS_MACOS: x86_64 arm64 # Build for Intel and Apple Silicon on macOS
           CIBW_ARCHS_WINDOWS: AMD64 ARM64 # Build for x86_64 and ARM64 on Windows
-          CIBW_SKIP: "cp37-* pp3*" # Skip older Python versions if not needed, cp38+ is your minimum
+          CIBW_SKIP: "cp37-* pp3* cp313-*" # Skip older Python versions, cp38+ is our minimum. openai-whisper doesn't support 3.13 yet.
           CIBW_TEST_COMMAND: "echo 'No tests configured for wheels yet'" # Add your test command here later
           CIBW_TEST_REQUIRES: "" # Add test dependencies here later
         run: cibuildwheel --output-dir wheelhouse
