@@ -44,7 +44,7 @@ except ImportError:
 DEFAULT_MODEL_NAME = "turbo"
 DEFAULT_ENERGY_THRESHOLD = 1000
 DEFAULT_RECORD_TIMEOUT = 0.5  # Seconds for real-time recording
-DEFAULT_PHRASE_TIMEOUT = 2.0  # Seconds of silence before new line
+DEFAULT_PHRASE_TIMEOUT = 10.0  # Seconds of silence before a new phrase is started
 DEFAULT_MICROPHONE = "default"  # For Linux
 
 

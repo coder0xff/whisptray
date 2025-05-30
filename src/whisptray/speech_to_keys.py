@@ -174,14 +174,18 @@ class SpeechToKeys:
                 logging.error("Error in process_audio loop: %s", e, exc_info=True)
                 sleep(0.1) # Prevent rapid looping on persistent error
 
-    def _transcribe(self, is_complete_phrase, audio_samples):
+    def _transcribe(self, previous_phrase_done, audio_samples):
         try:
             result = self.audio_model.transcribe(audio_samples, fp16=torch.cuda.is_available())
             text = result["text"]
             logging.debug("Transcribed text: '%s'", text) # Can be very verbose
 
             if text:
-                if is_complete_phrase:
+                if previous_phrase_done:
+                    # Sometimes the transciption misses ending punctuation if it had
+                    # thought more words would come, but did not.
+                    if self.buffer and self.buffer.rstrip()[-1] not in [".", "!", "?"]:
+                        self.keyboard.type(".")
                     self.keyboard.type(text)
                     self.buffer = text
                 else:
