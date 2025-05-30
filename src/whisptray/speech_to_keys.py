@@ -33,6 +33,7 @@ class SpeechToKeys:
         self.keyboard = KeyboardController()
         self._keyboard_listener = None
         self._is_programmatic_typing = False # Flag to indicate programmatic typing
+        self._stop_listening_callback = None # For the background listener
 
         logging.debug("Loading Whisper model: %s", model_name)
 
@@ -49,6 +50,30 @@ class SpeechToKeys:
         # Don't let it change, because eventually it will whisptray noise.
         self.recorder.dynamic_energy_threshold = False
 
+        # Background listener will be started when dictation is enabled.
+        # Start audio processing thread
+        audio_thread = threading.Thread(
+            target=self._process_audio, daemon=True, name="AudioProcessThread"
+        )
+        audio_thread.start()
+        logging.debug("Audio processing thread started.")
+
+    def shutdown(self):
+        """
+        Shuts down the speech to keys.
+        """
+        self.enabled = False # This will trigger the setter to stop listeners and set dictation_active to False
+
+        # Ensure data_queue is emptied
+        while not self.data_queue.empty():
+            try:
+                self.data_queue.get_nowait()
+            except Empty:
+                break
+        logging.debug("SpeechToKeys shutdown complete.")
+
+    def _adjust_ambient_noise(self):
+        """Adjusts the recorder for ambient noise."""
         with self.source:
             try:
                 self.recorder.adjust_for_ambient_noise(self.source, duration=1)
@@ -63,50 +88,6 @@ class SpeechToKeys:
                     "Could not adjust for ambient noise: %s", e, exc_info=True
                 )
                 # Continue without adjustment if it fails
-
-        # Start listening in background so it's ready, and
-        # self.dictation_active controls actual processing.
-        try:
-            # The callback will now check dictation_active before putting data in queue
-            self.recorder.listen_in_background(
-                self.source,
-                self._record_callback,
-                phrase_time_limit=self.record_timeout,
-            )
-            logging.debug("Background listener started.")
-        except (OSError, AttributeError, RuntimeError) as e:
-            logging.error("Error starting background listener: %s", e, exc_info=True)
-            # Consider re-raising or setting a flag
-            return
-
-        # Start audio processing thread
-        audio_thread = threading.Thread(
-            target=self._process_audio, daemon=True, name="AudioProcessThread"
-        )
-        audio_thread.start()
-        logging.debug("Audio processing thread started.")
-
-    def shutdown(self):
-        """
-        Shuts down the speech to keys.
-        """
-        self.enabled = False # This will set self.dictation_active to False
-        if self.recorder and hasattr(
-            self.recorder, "stop_listening"
-        ):  # Check if listening
-            logging.debug("Stopping recorder listener.")
-            try:
-                self.recorder.stop_listening(wait_for_stop=False)
-            except Exception as e:
-                 logging.error("Error stopping recorder listener: %s", e, exc_info=True)
-        # Ensure data_queue is emptied or signal processing thread to terminate if it depends on queue state
-        while not self.data_queue.empty():
-            try:
-                self.data_queue.get_nowait()
-            except Empty:
-                break
-        logging.debug("SpeechToKeys shutdown complete.")
-
 
     def _reset(self):
         self.phrase_bytes = b""
@@ -150,7 +131,6 @@ class SpeechToKeys:
         if self._keyboard_listener is not None:
             logging.debug("Stopping keyboard listener.")
             self._keyboard_listener.stop()
-            self._keyboard_listener.join()
             self._keyboard_listener = None
             logging.debug("Keyboard listener stopped.")
         else:
@@ -249,14 +229,42 @@ class SpeechToKeys:
 
     @enabled.setter
     def enabled(self, value: bool):
-        if self._keyboard_listener is None:
-            if value:
-                self._start_keyboard_listener()
-            else:
-                self._stop_keyboard_listener()
+        if value == self.dictation_active:
+            logging.debug(f"SpeechToKeys.enabled changing from {self.dictation_active} to {value} (no change)")
+            return
 
-        if value != self.dictation_active:
-            logging.debug(f"SpeechToKeys.enabled changing from {self.dictation_active} to {value}")
-            if value:
-                self._reset() # Clear previous phrase data for a fresh start
-            self.dictation_active = value
+        logging.debug(f"SpeechToKeys.enabled changing from {self.dictation_active} to {value}")
+
+        if value:
+            assert self._stop_listening_callback is None, "Stop listening callback should be None"
+            self._start_keyboard_listener()
+            self._adjust_ambient_noise()
+
+            self._reset()
+            self.dictation_active = True
+            
+            try:
+                self._stop_listening_callback = self.recorder.listen_in_background(
+                    self.source,
+                    self._record_callback,
+                    phrase_time_limit=self.record_timeout,
+                )
+                logging.debug("Background audio listener started.")
+            except (OSError, AttributeError, RuntimeError) as e:
+                logging.error("Error starting background audio listener: %s", e, exc_info=True)
+                self._stop_keyboard_listener()
+                return
+
+        else:
+            self.dictation_active = False # Set this first
+            self._stop_keyboard_listener() # Stop keyboard listener
+
+            assert self._stop_listening_callback is not None, "Stop listening callback should not be None"
+            logging.debug("Stopping background audio listener.")
+            try:
+                self._stop_listening_callback(wait_for_stop=True)
+            except Exception as e:
+                logging.error("Error stopping background audio listener: %s", e, exc_info=True)
+            self._stop_listening_callback = None
+
+            self._reset()
