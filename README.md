@@ -52,33 +52,6 @@ Available arguments:
 
 3. **System Dependency (ffmpeg for Whisper):**
    Ensure `ffmpeg` is installed on your system, as Whisper requires it for audio processing.
-   - **Ubuntu/Debian**: `sudo apt update && sudo apt install ffmpeg`
+   - **Debian/Ubuntu-based systems**: `sudo apt update && sudo apt install ffmpeg`
 
-
-4. **System Dependency (AppIndicator & PyGObject for Tray Icon on Linux):**
-   For the system tray icon to function reliably on many Linux desktop environments (especially those using GNOME Shell), `pystray` works best with the `AppIndicator` backend. This requires `PyGObject` (Python bindings for GObject) and the `AppIndicator` GObject introspection bindings.
-
-   - **Debian/Ubuntu-based systems (e.g., Ubuntu 22.04 LTS):**
-     You'll need to install `gir1.2-appindicator3-0.1` and the PyGObject development files. The specific PyGObject package might depend on your distribution version.
-     ```bash
-     sudo apt-get update && sudo apt-get install gir1.2-appindicator3-0.1 python3-gi python3-gi-cairo gir1.2-gtk-3.0
-     ```
-     If you encounter issues related to `libgirepository`, you might also need:
-     ```bash
-     sudo apt-get install libgirepository1.0-dev
-     ```
-     Or for newer systems, potentially `libgirepository2.0-dev`.
-
-   - **Other Linux Distributions:**
-     Please search your distribution's package manager for the equivalents of:
-       - `appindicator3` or `libappindicator3` (e.g., `libappindicator-gtk3` on Fedora)
-       - `PyGObject` or `python-gobject` (e.g., `python3-gobject` on Fedora)
-       - The GObject Introspection development files (`gobject-introspection` or similar).
-
-   After installing these system packages, you might need to reinstall the Python dependencies if you are using a virtual environment to ensure they pick up the new system libraries:
-   ```bash
-   pip install pystray --force-reinstall
-   ```
-   *(Note: The specific Python packages to reinstall might vary. `pystray` itself doesn't directly link to these system libraries at install time in a way that always necessitates reinstalling it, but ensuring `PyGObject` is correctly picked up by Python is key. Often, activating the virtual environment *after* system package installation is sufficient.)*
-
-5. `make develop`
+4. `make develop`

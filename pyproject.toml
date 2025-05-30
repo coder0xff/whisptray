@@ -23,7 +23,6 @@ dependencies = [
     "openai-whisper",
     "Pillow",
     "PyAudio",
-    "PyGObject==3.50.1",
     "pynput",
     "pystray",
     "SpeechRecognition",
