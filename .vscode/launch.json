@@ -6,12 +6,13 @@
     "configurations": [
 
         {
-            "name": "Python Debugger: Current File",
+            "name": "Python Debugger: whisptray module",
             "type": "debugpy",
             "request": "launch",
-            "program": "${file}",
+            "module": "whisptray",
             "console": "integratedTerminal",
-            "justMyCode": false
+            "justMyCode": false,
+            "cwd": "${workspaceFolder}/src"
         }
     ]
 }
