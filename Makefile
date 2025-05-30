@@ -80,7 +80,7 @@ format: $(VENV_DIR)/bin/activate
 # Clean build artifacts and virtual environment
 clean:
 	@echo "Cleaning build artifacts and virtual environment..."
-	rm -rf build dist src/*.egg-info .mypy_cache $(VENV_DIR) $(C_HELPER_OUTPUT) $(C_HELPER_SRC:.c=.o)
+	rm -rf build dist src/**/*.egg-info src/**/*.so .mypy_cache $(VENV_DIR) $(C_HELPER_OUTPUT) $(C_HELPER_SRC:.c=.o)
 	find . -name '*.pyc' -delete
 	find . -name '__pycache__' -type d -delete
 	@echo "Clean complete."
