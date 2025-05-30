@@ -129,7 +129,7 @@ build-wheels-linux: clean-c-helper scripts/ci/install_linux_deps.sh
 	CIBW_TEST_COMMAND=$(CIBW_TEST_COMMAND) \
 	CIBW_TEST_REQUIRES=$(CIBW_TEST_REQUIRES) \
 	CIBW_BUILD_VERBOSITY=$(CIBW_BUILD_VERBOSITY) \
-	$(PYTHON) -m cibuildwheel --platform linux --output-dir $(CIBW_OUTPUT_DIR)
+	cibuildwheel --platform linux --output-dir $(CIBW_OUTPUT_DIR)
 
 # Target to build Windows wheels
 build-wheels-windows: clean-c-helper
@@ -139,7 +139,7 @@ build-wheels-windows: clean-c-helper
 	CIBW_TEST_COMMAND=$(CIBW_TEST_COMMAND) \
 	CIBW_TEST_REQUIRES=$(CIBW_TEST_REQUIRES) \
 	CIBW_BUILD_VERBOSITY=$(CIBW_BUILD_VERBOSITY) \
-	$(PYTHON) -m cibuildwheel --platform windows --output-dir $(CIBW_OUTPUT_DIR)
+	cibuildwheel --platform windows --output-dir $(CIBW_OUTPUT_DIR)
 
 # Target to build macOS wheels
 build-wheels-macos: clean-c-helper
@@ -149,7 +149,7 @@ build-wheels-macos: clean-c-helper
 	CIBW_TEST_COMMAND=$(CIBW_TEST_COMMAND) \
 	CIBW_TEST_REQUIRES=$(CIBW_TEST_REQUIRES) \
 	CIBW_BUILD_VERBOSITY=$(CIBW_BUILD_VERBOSITY) \
-	$(PYTHON) -m cibuildwheel --platform macos --output-dir $(CIBW_OUTPUT_DIR)
+	cibuildwheel --platform macos --output-dir $(CIBW_OUTPUT_DIR)
 
 # Clean C helper library specifically
 clean-c-helper:

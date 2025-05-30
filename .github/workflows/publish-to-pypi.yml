@@ -54,6 +54,9 @@ jobs:
         with:
           platforms: arm64,ppc64le
 
+      - name: Install cibuildwheel
+        run: pip install cibuildwheel
+
       - name: Build wheels via Make
         run: |
           os_lowercase=$(echo "${{ runner.os }}" | tr '[:upper:]' '[:lower:]')
