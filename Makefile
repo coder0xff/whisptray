@@ -20,7 +20,7 @@ ACTIVATE = . $(VENV_DIR)/bin/activate
 
 # Source files
 # For Python tools
-PYTHON_SRC_FILES = src/whisptray.py
+PYTHON_SRC_FILES = src/whisptray
 # C helper library
 C_HELPER_SRC = src/alsa_redirect.c
 C_HELPER_OUTPUT = src/whisptray/alsa_redirect.so

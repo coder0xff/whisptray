@@ -1,7 +1,9 @@
+"""Contains the ALSA error handler, which just logs the errors."""
+
 import ctypes
+import glob
 import logging
 import os
-import glob
 from sys import platform
 
 # --- ALSA Error Handling Setup ---
@@ -79,9 +81,11 @@ def _load_alsa_redirect_lib():
             logging.debug("Loaded alsa_redirect.so from: %s", c_redirect_lib_path)
             return c_redirect_lib
         except OSError as e:
-            logging.error("Error loading alsa_redirect.so from %s: %s", c_redirect_lib_path, e)
+            logging.error(
+                "Error loading alsa_redirect.so from %s: %s", c_redirect_lib_path, e
+            )
     else:
-        # Fallback for when installed as a package, where setuptools renames the .so file
+        # Fallback for when installed as a package, where setuptools renames the .so
         package_dir = os.path.dirname(os.path.abspath(__file__))
         found_libs = list(glob.glob(os.path.join(package_dir, "alsa_redirect*.so")))
         if found_libs:
@@ -91,10 +95,16 @@ def _load_alsa_redirect_lib():
             c_redirect_lib_path_found = found_libs[0]
             try:
                 c_redirect_lib = ctypes.CDLL(c_redirect_lib_path_found)
-                logging.debug("Loaded compiled C extension: %s", c_redirect_lib_path_found)
+                logging.debug(
+                    "Loaded compiled C extension: %s", c_redirect_lib_path_found
+                )
                 return c_redirect_lib
             except OSError as e:
-                logging.error("Error loading compiled C extension %s: %s", c_redirect_lib_path_found, e)
+                logging.error(
+                    "Error loading compiled C extension %s: %s",
+                    c_redirect_lib_path_found,
+                    e,
+                )
         else:
             # Last resort: try loading from system path (less reliable)
             try:
@@ -103,7 +113,8 @@ def _load_alsa_redirect_lib():
                 return c_redirect_lib
             except OSError:
                 logging.error(
-                    "alsa_redirect.so not found at %s, nor as alsa_redirect*.so in package dir, nor in system paths.",
+                    "alsa_redirect.so not found at %s, nor as alsa_redirect*.so in"
+                    " package dir, nor in system paths.",
                     c_redirect_lib_path,
                 )
     return None
@@ -117,9 +128,7 @@ def _define_c_lib_interfaces(c_lib):
 
     try:
         # void register_python_alsa_callback(python_callback_func_t callback);
-        c_lib.register_python_alsa_callback.argtypes = [
-            PYTHON_ALSA_ERROR_HANDLER_FUNC
-        ]
+        c_lib.register_python_alsa_callback.argtypes = [PYTHON_ALSA_ERROR_HANDLER_FUNC]
         c_lib.register_python_alsa_callback.restype = None
 
         # int initialize_alsa_error_handling();
@@ -131,7 +140,11 @@ def _define_c_lib_interfaces(c_lib):
         c_lib.clear_alsa_error_handling.restype = ctypes.c_int
         logging.debug("Successfully defined C library interfaces.")
     except AttributeError as e:
-        logging.error("Error defining C library interfaces: %s. Library might not have expected functions.", e)
+        logging.error(
+            "Error defining C library interfaces: %s. Library might not have expected"
+            " functions.",
+            e,
+        )
 
 
 def _get_and_prepare_alsa_lib():
@@ -139,12 +152,17 @@ def _get_and_prepare_alsa_lib():
     c_lib = _load_alsa_redirect_lib()
     if c_lib:
         _define_c_lib_interfaces(c_lib)
-        # Check if critical functions are actually defined after attempting to define interfaces
-        # This is a basic check. More robust checks could verify specific function pointers.
-        if not hasattr(c_lib, 'initialize_alsa_error_handling') or \
-           not hasattr(c_lib, 'clear_alsa_error_handling') or \
-           not hasattr(c_lib, 'register_python_alsa_callback'):
-            logging.error("Critical C library functions not found after defining interfaces.")
+        # Check if critical functions are actually defined after attempting to define
+        # interfaces. This is a basic check. More robust checks could verify specific
+        # function pointers.
+        if (
+            not hasattr(c_lib, "initialize_alsa_error_handling")
+            or not hasattr(c_lib, "clear_alsa_error_handling")
+            or not hasattr(c_lib, "register_python_alsa_callback")
+        ):
+            logging.error(
+                "Critical C library functions not found after defining interfaces."
+            )
             return None
     return c_lib
 
@@ -160,7 +178,9 @@ def setup_alsa_error_handler():
     try:
         c_redirect_lib = _get_and_prepare_alsa_lib()
         if c_redirect_lib is None:
-            logging.error("Failed to load/prepare c_redirect_lib. Cannot set ALSA error handler.")
+            logging.error(
+                "Failed to load/prepare c_redirect_lib. Cannot set ALSA error handler."
+            )
             return
 
         c_redirect_lib.register_python_alsa_callback(py_error_handler_ctype)
@@ -187,7 +207,10 @@ def teardown_alsa_error_handler():
     try:
         c_redirect_lib = _get_and_prepare_alsa_lib()
         if c_redirect_lib is None:
-            logging.error("Failed to load/prepare c_redirect_lib for teardown. Cannot clear ALSA error handler.")
+            logging.error(
+                "Failed to load/prepare c_redirect_lib for teardown. Cannot clear ALSA"
+                " error handler."
+            )
             return
 
         ret = c_redirect_lib.clear_alsa_error_handling()
@@ -199,4 +222,4 @@ def teardown_alsa_error_handler():
             logging.debug("Successfully cleared ALSA error handler via C helper.")
 
     except (OSError, AttributeError, TypeError, ValueError, ctypes.ArgumentError) as e:
-        logging.error("Error during ALSA error handler teardown: %s", e, exc_info=True) 
+        logging.error("Error during ALSA error handler teardown: %s", e, exc_info=True)

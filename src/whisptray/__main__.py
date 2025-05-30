@@ -1,20 +1,18 @@
 """whisptray using your microphone to produce keyboard input."""
 
 import argparse
-import ctypes
-import ctypes.util
 import logging
 import os
 import subprocess
 import threading
 import time
 from sys import platform
-import glob
 
 import speech_recognition
 from PIL import Image, ImageDraw
-from .speech_to_keys import SpeechToKeys
+
 from .alsa_error_handler import setup_alsa_error_handler, teardown_alsa_error_handler
+from .speech_to_keys import SpeechToKeys
 
 # Conditional import for tkinter
 try:
@@ -29,7 +27,7 @@ except ImportError:
 if "linux" in platform:
     os.environ["PYSTRAY_BACKEND"] = "xorg"
 
-# pylint: disable=wrong-import-position
+# pylint: disable=wrong-import-position,wrong-import-order
 import pystray
 
 try:
@@ -173,8 +171,7 @@ def open_microphone(mic_name: str) -> speech_recognition.Microphone:
     return result
 
 
-# pylint: disable=too-many-instance-attributes
-class whisptrayGui:
+class WhisptrayGui:
     """
     Class to run the whisptray App.
     """
@@ -188,7 +185,7 @@ class whisptrayGui:
         # Default in seconds, updated by system settings
         self.effective_double_click_interval = 0.5
         self.app_is_exiting = threading.Event()
-        self.app_icon = None # Initialize to None
+        self.app_icon = None  # Initialize to None
 
         source = open_microphone(mic_name)
         if source is None:
@@ -205,7 +202,9 @@ class whisptrayGui:
         # Start icon health check thread
         if self.app_icon:
             self.health_check_thread = threading.Thread(
-                target=self._icon_health_check, daemon=True, name="IconHealthCheckThread"
+                target=self._icon_health_check,
+                daemon=True,
+                name="IconHealthCheckThread",
             )
             self.health_check_thread.start()
             logging.debug("Icon health check thread started.")
@@ -232,16 +231,12 @@ class whisptrayGui:
         if self.speech_to_keys.enabled:
             logging.debug("Dictation started by toggle.")
             if self.app_icon:
-                self.app_icon.icon = whisptrayGui._create_tray_image("record")
+                self.app_icon.icon = WhisptrayGui._create_tray_image("record")
 
         else:
             logging.debug("Dictation stopped by toggle.")
             if self.app_icon:
-                self.app_icon.icon = whisptrayGui._create_tray_image("stop")
-            # Consider stopping the listener if you want to save resources,
-            # but be careful about restarting it correctly.
-            # For now, we just set dictation_active to False and the callback/processing
-            # will ignore new data.
+                self.app_icon.icon = WhisptrayGui._create_tray_image("stop")
 
     def exit_program(self):
         """Stops the program."""
@@ -268,7 +263,7 @@ class whisptrayGui:
         """Sets up and runs the system tray icon."""
         logging.debug("setup_tray_icon called.")
         # Initial icon is 'stop' since dictation_active is False initially
-        icon_image = whisptrayGui._create_tray_image("stop")
+        icon_image = WhisptrayGui._create_tray_image("stop")
 
         if pystray.Icon.HAS_DEFAULT_ACTION:
             menu = pystray.Menu(
@@ -379,7 +374,7 @@ class whisptrayGui:
 
     def _initialize_double_click_interval(self):
         """Initializes the double-click interval, falling back to default if needed."""
-        system_interval = whisptrayGui._get_system_double_click_time()
+        system_interval = WhisptrayGui._get_system_double_click_time()
         if (
             system_interval is not None and 0.1 <= system_interval <= 2.0
         ):  # Sanity check interval
@@ -482,33 +477,28 @@ class whisptrayGui:
         """Handles exceptions in threads."""
         thread_name = threading.current_thread().name
         logging.error(
-            f"Exception in thread '{thread_name}': {args[1]}. Initiating application exit.",
-            exc_info=True
+            "Exception in thread '%s': %s. Initiating application exit.",
+            thread_name,
+            args[1],
+            exc_info=True,
         )
         self.exit_program()
 
     def _icon_health_check(self):
         """Periodically checks the health of the pystray icon and exits on failure."""
         if not self.app_icon:
-            logging.warning("Icon health check: app_icon is None at start. Thread exiting.")
+            logging.warning(
+                "Icon health check: app_icon is None at start. Thread exiting."
+            )
             return
 
         logging.debug("Icon health check loop starting.")
         while not self.app_is_exiting.is_set():
-            try:
-                # The act of getting and setting the icon can reveal issues with pystray.
-                current_icon_image = self.app_icon.icon
-                self.app_icon.icon = current_icon_image
-            except Exception as e:  # Catching a broad exception as pystray errors can be varied
-                logging.error(
-                    "Pystray icon health check failed: %s. Initiating application exit.",
-                    e,
-                    exc_info=True
-                )
-                self.exit_program()
-                break  # Exit health check loop
+            # The act of getting and setting the icon can help issues with pystray
+            current_icon_image = self.app_icon.icon
+            self.app_icon.icon = current_icon_image
 
-            time.sleep(1)  # Check every second
+            time.sleep(1)
 
         logging.debug("Icon health check loop finished.")
 
@@ -531,7 +521,7 @@ def main():
     if not args.non_english and model_name not in ["large", "turbo"]:
         model_name += ".en"
 
-    gui = whisptrayGui(
+    gui = WhisptrayGui(
         args.mic,
         model_name,
         args.energy_threshold,
