@@ -1,6 +1,6 @@
 # Makefile for whisptray App
 
-.PHONY: all install develop clean run check format help package
+.PHONY: all install develop clean run check format help package cibuildwheel
 
 # Default Python interpreter - can be overridden
 PYTHON ?= python3
@@ -24,6 +24,21 @@ PYTHON_SRC_FILES = src/whisptray
 # C helper library
 C_HELPER_SRC = src/alsa_redirect.c
 C_HELPER_OUTPUT = src/whisptray/alsa_redirect.so
+
+# Variables for cibuildwheel builds
+# These can be overridden from the environment if needed for specific CI jobs or local runs.
+CIBW_PYTHON_VERSION ?= "3.8 3.9 3.10 3.11 3.12"
+CIBW_BUILD_VERBOSITY ?= 0
+CIBW_ARCHS_LINUX ?= "auto aarch64 ppc64le"
+CIBW_ARCHS_MACOS ?= "x86_64 arm64"
+CIBW_ARCHS_WINDOWS ?= "AMD64 ARM64"
+CIBW_BEFORE_BUILD_LINUX ?= "sh {project}/scripts/ci/install_linux_deps.sh"
+CIBW_MANYLINUX_AARCH64_IMAGE ?= "manylinux_2_28"
+# cp37-*: project requires Python 3.8+. pp3*: PyPy, skip for now. cp313-*: openai-whisper build issue. *-manylinux_i686: torch dependency not available for 32-bit Linux. *-*manylinux_ppc64le: QEMU/image instability.
+CIBW_SKIP_CONFIG ?= "cp37-* pp3* cp313-* *-manylinux_i686 *-*manylinux_ppc64le *-musllinux_ppc64le"
+CIBW_TEST_COMMAND ?= "echo 'No tests configured for wheels yet'" # Generic test command
+CIBW_TEST_REQUIRES ?= ""
+CIBW_OUTPUT_DIR ?= wheelhouse
 
 # Build the package
 package: $(VENV_DIR)/bin/activate
@@ -103,3 +118,40 @@ help:
 	@echo "  make PYTHON=python3.9 PIP=pip3.9 install"
 	@echo "To use a specific C compiler:"
 	@echo "  make CC=clang install" 
+
+# Target to build Linux wheels
+build-wheels-linux: clean-c-helper scripts/ci/install_linux_deps.sh
+	@echo "Building Linux wheels using cibuildwheel..."
+	CIBW_BEFORE_BUILD_LINUX=$(CIBW_BEFORE_BUILD_LINUX) \
+	CIBW_ARCHS_LINUX=$(CIBW_ARCHS_LINUX) \
+	CIBW_MANYLINUX_AARCH64_IMAGE=$(CIBW_MANYLINUX_AARCH64_IMAGE) \
+	CIBW_SKIP=$(CIBW_SKIP_CONFIG) \
+	CIBW_TEST_COMMAND=$(CIBW_TEST_COMMAND) \
+	CIBW_TEST_REQUIRES=$(CIBW_TEST_REQUIRES) \
+	CIBW_BUILD_VERBOSITY=$(CIBW_BUILD_VERBOSITY) \
+	$(PYTHON) -m cibuildwheel --platform linux --output-dir $(CIBW_OUTPUT_DIR)
+
+# Target to build Windows wheels
+build-wheels-windows: clean-c-helper
+	@echo "Building Windows wheels using cibuildwheel..."
+	CIBW_ARCHS_WINDOWS=$(CIBW_ARCHS_WINDOWS) \
+	CIBW_SKIP=$(CIBW_SKIP_CONFIG) \
+	CIBW_TEST_COMMAND=$(CIBW_TEST_COMMAND) \
+	CIBW_TEST_REQUIRES=$(CIBW_TEST_REQUIRES) \
+	CIBW_BUILD_VERBOSITY=$(CIBW_BUILD_VERBOSITY) \
+	$(PYTHON) -m cibuildwheel --platform windows --output-dir $(CIBW_OUTPUT_DIR)
+
+# Target to build macOS wheels
+build-wheels-macos: clean-c-helper
+	@echo "Building macOS wheels using cibuildwheel..."
+	CIBW_ARCHS_MACOS=$(CIBW_ARCHS_MACOS) \
+	CIBW_SKIP=$(CIBW_SKIP_CONFIG) \
+	CIBW_TEST_COMMAND=$(CIBW_TEST_COMMAND) \
+	CIBW_TEST_REQUIRES=$(CIBW_TEST_REQUIRES) \
+	CIBW_BUILD_VERBOSITY=$(CIBW_BUILD_VERBOSITY) \
+	$(PYTHON) -m cibuildwheel --platform macos --output-dir $(CIBW_OUTPUT_DIR)
+
+# Clean C helper library specifically
+clean-c-helper:
+	@echo "Cleaning C helper library $(C_HELPER_OUTPUT)..."
+	rm -f $(C_HELPER_OUTPUT) $(C_HELPER_SRC:.c=.o)

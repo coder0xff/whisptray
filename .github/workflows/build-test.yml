@@ -50,31 +50,22 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set up QEMU (for Linux arm64, ppc64le) - Optional
+      - name: Set up QEMU (for Linux arm64, ppc64le)
         if: matrix.os == 'ubuntu-latest'
         uses: docker/setup-qemu-action@v3
         with:
           platforms: arm64,ppc64le
 
-      - name: Install cibuildwheel
-        run: pip install cibuildwheel
-
-      - name: Build wheels
-        env:
-          CIBW_BEFORE_BUILD_LINUX: "sh {project}/scripts/ci/install_linux_deps.sh"
-          CIBW_ARCHS_LINUX: auto aarch64 ppc64le
-          CIBW_MANYLINUX_AARCH64_IMAGE: manylinux_2_28
-          CIBW_ARCHS_MACOS: x86_64 arm64
-          CIBW_ARCHS_WINDOWS: AMD64 ARM64
-          CIBW_SKIP: "cp37-* pp3* cp313-* *-manylinux_i686" # cp37-*: project requires Python 3.8+. pp3*: PyPy, skip for now. cp313-*: openai-whisper build issue. *-manylinux_i686: torch dependency not available for 32-bit Linux.
-          CIBW_TEST_COMMAND: "echo 'No tests configured for wheels yet'" # Placeholder
-          CIBW_TEST_REQUIRES: "" # Placeholder
-        run: cibuildwheel --output-dir wheelhouse
+      - name: Build wheels via Make
+        run: |
+          os_lowercase=$(echo "${{ runner.os }}" | tr '[:upper:]' '[:lower:]')
+          make "build-wheels-${os_lowercase}"
 
       - name: Upload wheel artifact
         uses: actions/upload-artifact@v4
         with:
           name: wheel-artifact-test-${{ matrix.os }}
-          path: wheelhouse/*.whl
+          # The path will be wheelhouse/*.whl based on CIBW_OUTPUT_DIR in Makefile
+          path: wheelhouse/*.whl 
 
   # No publish job in this workflow 
