@@ -48,11 +48,6 @@ jobs:
         with:
           fetch-depth: 0 # Fetch all history for setuptools_scm
 
-      - name: Set up Python for Make execution
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.8'
-
       - name: Set up QEMU (for Linux arm64, ppc64le)
         if: matrix.os == 'ubuntu-latest'
         uses: docker/setup-qemu-action@v3
