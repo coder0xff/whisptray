@@ -18,19 +18,19 @@ class SpeechToKeys:
 
     # pylint: disable=too-many-arguments,too-many-positional-arguments
     def __init__(
-        self, model_name: str, energy_threshold: int, record_timeout: float, phrase_timeout_config: float, source: speech_recognition.Microphone
+        self, model_name: str, energy_threshold: int, record_timeout: float, phrase_timeout: float, source: speech_recognition.Microphone
     ):
         self.model_name = model_name
         self.energy_threshold = energy_threshold
         self.record_timeout = record_timeout
-        # Use the passed phrase_timeout_config instead of a local or global DEFAULT_PHRASE_TIMEOUT
-        self.phrase_timeout_config = phrase_timeout_config # Renamed to avoid confusion with the module-level const
+        self.phrase_timeout = timedelta(seconds=phrase_timeout)
         self.source = source
         self.data_queue = Queue[bytes]()
         self.phrase_bytes = b""
         self.phrase_time = None
         self.transcription_history = [""]
         self.dictation_active = False
+        self.keyboard = KeyboardController()
 
         logging.debug("Loading Whisper model: %s", model_name)
 
@@ -129,23 +129,14 @@ class SpeechToKeys:
         """Processes audio from the queue and performs transcription."""
         while True:
             if not self.dictation_active:
-                # If not active, we might want to ensure the thread can exit cleanly upon shutdown
-                # or simply sleep. If self.enabled is False, it means shutdown is in progress.
-                if not self.enabled and self.data_queue.empty(): # Check if shutdown and queue is clear
-                    logging.debug("Audio processing thread: dictation not active and queue empty, considering exit or longer sleep.")
-                    # Potentially break here if a shutdown event is set, or sleep longer
                 sleep(0.1)
                 continue
 
             try:
                 now = datetime.now(timezone.utc)
                 if not self.data_queue.empty():
-                    # logging.debug("Processing audio from queue at %s", now) # Can be very verbose
                     phrase_complete = False
-                    # Use self.phrase_timeout_config which was passed during __init__
-                    if self.phrase_time and now - self.phrase_time > timedelta(
-                        seconds=self.phrase_timeout_config
-                    ):
+                    if self.phrase_time is not None and now - self.phrase_time > self.phrase_timeout:
                         self.phrase_bytes = b""
                         phrase_complete = True
                     self.phrase_time = now
@@ -187,23 +178,23 @@ class SpeechToKeys:
         try:
             result = self.audio_model.transcribe(audio_np, fp16=torch.cuda.is_available())
             text = result["text"].strip()
-            # logging.debug("Transcribed text: '%s'", text) # Can be very verbose
+            logging.debug("Transcribed text: '%s'", text) # Can be very verbose
 
             if text:
-                keyboard = KeyboardController()
                 if phrase_complete:
+                    assert self.transcription_history, "Transcription history is empty"
                     if self.transcription_history[-1] and not self.transcription_history[
                         -1
                     ].endswith(" "):
-                        keyboard.type(" ")
-                    keyboard.type(text)
+                        self.keyboard.type(" ")
+                    self.keyboard.type(text)
                     self.transcription_history.append(text)
                 else:
                     if self.transcription_history and self.transcription_history[-1]:
                         for _ in range(len(self.transcription_history[-1])):
-                            keyboard.press(Key.backspace)
-                            keyboard.release(Key.backspace)
-                    keyboard.type(text)
+                            self.keyboard.press(Key.backspace)
+                            self.keyboard.release(Key.backspace)
+                    self.keyboard.type(text)
                     self.transcription_history[-1] = text
         except Exception as e:
             logging.error("Error during transcription: %s", e, exc_info=True)

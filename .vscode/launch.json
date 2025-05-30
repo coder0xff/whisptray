@@ -12,7 +12,8 @@
             "module": "whisptray",
             "console": "integratedTerminal",
             "justMyCode": false,
-            "cwd": "${workspaceFolder}/src"
+            "cwd": "${workspaceFolder}/src",
+            "args": ["--verbose"]
         }
     ]
 }
