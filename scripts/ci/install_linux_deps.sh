@@ -8,12 +8,22 @@ echo "Checking system package manager..."
 if command -v yum &> /dev/null; then
     echo "Using yum"
     yum install -y pkgconfig alsa-lib-devel
-    # Attempt to install portaudio-devel, but don't fail the script if it's not found
-    yum install -y portaudio-devel || echo "Warning: portaudio-devel not found or failed to install via yum."
+    # Attempt to install portaudio-devel
+    if ! yum install -y portaudio-devel; then
+        echo "Warning: 'yum install -y portaudio-devel' failed. Searching for portaudio packages..."
+        yum search portaudio || echo "Warning: 'yum search portaudio' also failed or found nothing."
+        echo "Continuing without portaudio-devel from yum."
+    fi
 elif command -v apt-get &> /dev/null; then
     echo "Using apt-get"
     apt-get update
-    apt-get install -y pkg-config libasound2-dev libportaudio-dev
+    # Attempt to install standard dev packages
+    apt-get install -y pkg-config libasound2-dev
+    if ! apt-get install -y libportaudio-dev; then
+        echo "Warning: 'apt-get install -y libportaudio-dev' failed. Searching for portaudio packages..."
+        apt-cache search portaudio || echo "Warning: 'apt-cache search portaudio' also failed or found nothing."
+        echo "Continuing without libportaudio-dev from apt-get."
+    fi
 else
     echo "Error: Neither yum nor apt-get found. Cannot install dependencies."
     exit 1
