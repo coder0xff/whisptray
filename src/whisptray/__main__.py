@@ -8,19 +8,12 @@ import os
 import subprocess
 import threading
 import time
-from datetime import datetime, timedelta, timezone
-from queue import Empty, Queue
 from sys import platform
-from time import sleep
 import glob
 
-import numpy as np
 import speech_recognition
-import torch
-import whisper
 from PIL import Image, ImageDraw
-from pynput.keyboard import Controller as KeyboardController
-from pynput.keyboard import Key
+from .speech_to_keys import SpeechToKeys
 
 # Conditional import for tkinter
 try:
@@ -275,7 +268,7 @@ def parse_args():
     return args
 
 
-def open_microphone(mic_name: str):
+def open_microphone(mic_name: str) -> speech_recognition.Microphone:
     """
     Opens a microphone based on the microphone name.
     """
@@ -311,205 +304,6 @@ def open_microphone(mic_name: str):
 
 
 # pylint: disable=too-many-instance-attributes
-class SpeechToKeys:
-    """
-    Class to convert speech to keyboard input.
-    """
-
-    # pylint: disable=too-many-arguments,too-many-positional-arguments
-    def __init__(
-        self, model_name, energy_threshold, record_timeout, phrase_timeout, source
-    ):
-        self.model_name = model_name
-        self.energy_threshold = energy_threshold
-        self.record_timeout = record_timeout
-        self.phrase_timeout = phrase_timeout
-        self.source = source
-        self.data_queue = Queue[bytes]()
-        self.phrase_bytes = b""
-        self.phrase_time = None
-        self.transcription_history = [""]
-        self.dictation_active = False
-
-        logging.debug("Loading Whisper model: %s", model_name)
-
-        try:
-            self.audio_model = whisper.load_model(model_name)
-            logging.debug("Whisper model loaded successfully.")
-        except (OSError, RuntimeError, ValueError) as e:
-            logging.error("Error loading Whisper model: %s", e, exc_info=True)
-            return
-
-        self.recorder = speech_recognition.Recognizer()
-        self.recorder.energy_threshold = energy_threshold
-        # Don't let it change, because eventually it will whisptray noise.
-        self.recorder.dynamic_energy_threshold = False
-
-        with self.source:
-            try:
-                self.recorder.adjust_for_ambient_noise(self.source, duration=1)
-                logging.debug("Adjusted for ambient noise.")
-            except (
-                speech_recognition.WaitTimeoutError,
-                OSError,
-                ValueError,
-                AttributeError,
-            ) as e:
-                logging.warning(
-                    "Could not adjust for ambient noise: %s", e, exc_info=True
-                )
-                # Continue without adjustment if it fails
-
-        # Start listening in background so it's ready, and
-        # self.dictation_active controls actual processing.
-        try:
-            # The callback will now check dictation_active before putting data in queue
-            self.recorder.listen_in_background(
-                self.source,
-                self._record_callback,
-                phrase_time_limit=self.record_timeout,
-            )
-            logging.debug("Background listener started.")
-        except (OSError, AttributeError, RuntimeError) as e:
-            logging.error("Error starting background listener: %s", e, exc_info=True)
-            return
-
-        # Start audio processing thread
-        audio_thread = threading.Thread(
-            target=self._process_audio, daemon=True, name="AudioProcessThread"
-        )
-        audio_thread.start()
-        logging.debug("Audio processing thread started.")
-
-    def shutdown(self):
-        """
-        Shuts down the speech to keys.
-        """
-        self.enabled = False
-        if self.recorder and hasattr(
-            self.recorder, "stop_listening"
-        ):  # Check if listening
-            logging.debug("Stopping recorder listener.")
-            self.recorder.stop_listening(wait_for_stop=False)
-
-    def _reset(self):
-        self.phrase_bytes = b""
-        self.phrase_time = None
-        self.transcription_history = [""]
-        while not self.data_queue.empty():  # Clear the queue
-            try:
-                self.data_queue.get_nowait()
-            except Empty:
-                break
-
-    def _record_callback(self, _, audio: speech_recognition.AudioData) -> None:
-        """
-        Threaded callback function to receive audio data when recordings finish.
-        audio: An AudioData containing the recorded bytes.
-        """
-        if self.dictation_active:
-            data = audio.get_raw_data()
-            self.data_queue.put(data)
-
-    def _process_audio(self):
-        """Processes audio from the queue and performs transcription."""
-        while True:
-            if not self.dictation_active:
-                sleep(0.1)
-                continue
-
-            try:
-                now = datetime.now(timezone.utc)
-                if not self.data_queue.empty():
-                    logging.debug("Processing audio from queue at %s", now)
-                    phrase_complete = False
-                    if self.phrase_time and now - self.phrase_time > timedelta(
-                        seconds=DEFAULT_PHRASE_TIMEOUT
-                    ):
-                        self.phrase_bytes = b""
-                        phrase_complete = True
-                    self.phrase_time = now
-
-                    # Combine audio data from queue. Create a temporary list to avoid
-                    # issues if data_queue is modified during iteration.
-                    temp_audio_list = []
-                    while not self.data_queue.empty():
-                        try:
-                            temp_audio_list.append(self.data_queue.get_nowait())
-                        except Empty:
-                            # Should not happen if initial check was true, but good for
-                            # safety
-                            break
-
-                    audio_data = b"".join(temp_audio_list)
-                    self.phrase_bytes += audio_data
-
-                    if not self.phrase_bytes:  # Skip if no audio data
-                        sleep(0.1)
-                        continue
-
-                    audio_np = (
-                        np.frombuffer(self.phrase_bytes, dtype=np.int16).astype(
-                            np.float32
-                        )
-                        / 32768.0
-                    )
-
-                    if self.audio_model:
-                        self._transcribe(phrase_complete, audio_np)
-                    else:
-                        logging.warning("Audio model not loaded yet.")
-                else:
-                    sleep(0.1)
-            except (Empty, ValueError, TypeError, OSError) as e:
-                logging.error("Error in process_audio: %s", e, exc_info=True)
-                sleep(0.1)
-
-    def _transcribe(self, phrase_complete, audio_np):
-        result = self.audio_model.transcribe(audio_np, fp16=torch.cuda.is_available())
-        text = result["text"].strip()
-        logging.debug("Transcribed text: '%s'", text)
-
-        # Only process if there is new text
-        if text:
-            keyboard = KeyboardController()
-            if phrase_complete:
-                # New phrase, type with a space if previous text exists and doesn't end
-                # with space
-                if self.transcription_history[-1] and not self.transcription_history[
-                    -1
-                ].endswith(" "):
-                    keyboard.type(" ")
-                keyboard.type(text)
-                self.transcription_history.append(text)
-            else:
-                # Continuing a phrase. Need to "backspace" the previous part of this
-                # phrase and type the new full phrase. This is a simplification. A more
-                # robust solution would be to diff the text.
-                if self.transcription_history and self.transcription_history[-1]:
-                    for _ in range(len(self.transcription_history[-1])):
-                        keyboard.press(Key.backspace)
-                        keyboard.release(Key.backspace)
-                keyboard.type(text)
-                self.transcription_history[-1] = text
-
-    @property
-    def enabled(self):
-        """
-        Returns the enabled state of the speech to keys.
-        """
-        return self.dictation_active
-
-    @enabled.setter
-    def enabled(self, value):
-        if value and not self.dictation_active:
-            # The background listener is already started in __init__(). We just need to
-            # ensure data is cleared for a fresh start. Clear previous phrase data to
-            # avoid re-typing old text.
-            self._reset()
-        self.dictation_active = value
-
-
 class whisptrayGui:
     """
     Class to run the whisptray App.
