@@ -28,7 +28,7 @@ class SpeechToKeys:
         self.data_queue = Queue[bytes]()
         self.phrase_bytes = b""
         self.phrase_time = None
-        self.transcription_history = [""]
+        self.buffer = ""
         self.dictation_active = False
         self.keyboard = KeyboardController()
 
@@ -109,7 +109,7 @@ class SpeechToKeys:
     def _reset(self):
         self.phrase_bytes = b""
         self.phrase_time = None
-        self.transcription_history = [""]
+        self.buffer = ""
         while not self.data_queue.empty():  # Clear the queue
             try:
                 self.data_queue.get_nowait()
@@ -174,28 +174,31 @@ class SpeechToKeys:
                 logging.error("Error in process_audio loop: %s", e, exc_info=True)
                 sleep(0.1) # Prevent rapid looping on persistent error
 
-    def _transcribe(self, phrase_complete, audio_np):
+    def _transcribe(self, is_complete_phrase, audio_samples):
         try:
-            result = self.audio_model.transcribe(audio_np, fp16=torch.cuda.is_available())
-            text = result["text"].strip()
+            result = self.audio_model.transcribe(audio_samples, fp16=torch.cuda.is_available())
+            text = result["text"]
             logging.debug("Transcribed text: '%s'", text) # Can be very verbose
 
             if text:
-                if phrase_complete:
-                    assert self.transcription_history, "Transcription history is empty"
-                    if self.transcription_history[-1] and not self.transcription_history[
-                        -1
-                    ].endswith(" "):
-                        self.keyboard.type(" ")
+                if is_complete_phrase:
                     self.keyboard.type(text)
-                    self.transcription_history.append(text)
+                    self.buffer = text
                 else:
-                    if self.transcription_history and self.transcription_history[-1]:
-                        for _ in range(len(self.transcription_history[-1])):
+                    if self.buffer:
+                        # find the first index where the text and buffer differ
+                        index = next((i for i, (t, b) in enumerate(zip(text, self.buffer)) if t != b), len(self.buffer))
+                        for _ in range(index, len(self.buffer)):
                             self.keyboard.press(Key.backspace)
+                            sleep(0.01) # Web pages sometimes struggle with fast keystrokes.
                             self.keyboard.release(Key.backspace)
-                    self.keyboard.type(text)
-                    self.transcription_history[-1] = text
+                            sleep(0.01)
+                    else:
+                        index = 0;
+
+                    for i in range(index, len(text)):
+                        self.keyboard.type(text[i])
+                    self.buffer = text
         except Exception as e:
             logging.error("Error during transcription: %s", e, exc_info=True)
 
