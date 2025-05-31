@@ -81,6 +81,14 @@ jobs:
       id-token: write # IMPORTANT: this permission is mandatory for trusted publishing
 
     steps:
+      - name: Set up Python for publishing tools
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x' # Use a generic recent Python for tooling
+
+      - name: Upgrade packaging tools
+        run: python -m pip install --upgrade pip setuptools wheel twine pkginfo
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -100,5 +108,4 @@ jobs:
 
       - name: Publish package to PyPI
         uses: pypa/gh-action-pypi-publish@v1.9.0
-        # The `pypa/gh-action-pypi-publish` action will find all .whl and .tar.gz files
-        # in the `dist/` directory by default, which we created in the "Prepare package files" step. 
+        # No explicit user/password/token needed due to trusted publishing (id-token: write) 
