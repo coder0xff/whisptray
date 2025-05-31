@@ -40,7 +40,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-latest]
+        # os: [ubuntu-latest, windows-latest, macos-latest]
 
     steps:
       - name: Checkout repository
@@ -52,7 +53,7 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         uses: docker/setup-qemu-action@v3
         with:
-          platforms: arm64,ppc64le
+          platforms: arm64,ppc64le # ppc64le is skipped by CIBW_SKIP in Makefile
 
       - name: Install cibuildwheel
         run: pip install cibuildwheel
@@ -74,7 +75,8 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: pypi
-      url: https://test.pypi.org/p/whisptray # URL to the PyPI project
+      # url: https://test.pypi.org/p/whisptray 
+      url: https://pypi.org/p/whisptray
     permissions:
       id-token: write # IMPORTANT: this permission is mandatory for trusted publishing
 
