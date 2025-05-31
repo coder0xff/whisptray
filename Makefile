@@ -29,13 +29,13 @@ C_HELPER_OUTPUT = src/whisptray/alsa_redirect.so
 # These can be overridden from the environment if needed for specific CI jobs or local runs.
 CIBW_PYTHON_VERSION ?= "3.8 3.9 3.10 3.11 3.12"
 CIBW_BUILD_VERBOSITY ?= 0
-CIBW_ARCHS_LINUX ?= "auto aarch64 ppc64le"
+CIBW_ARCHS_LINUX ?= "auto aarch64"
 CIBW_ARCHS_MACOS ?= "x86_64 arm64"
 CIBW_ARCHS_WINDOWS ?= "AMD64 ARM64"
 CIBW_BEFORE_BUILD_LINUX ?= "sh {project}/scripts/ci/install_linux_deps.sh"
 CIBW_MANYLINUX_AARCH64_IMAGE ?= "manylinux_2_28"
-# cp37-*: project requires Python 3.8+. pp3*: PyPy, skip for now. cp313-*: openai-whisper build issue. *-manylinux_i686: torch dependency not available. *-*manylinux_ppc64le: QEMU/image instability. *-musllinux_*: torch dependency not available.
-CIBW_SKIP_CONFIG ?= "cp37-* pp3* cp313-* *-manylinux_i686 *-manylinux_ppc64le *-musllinux_*"
+# cp37-*: project requires Python 3.8+. pp3*: PyPy, skip for now. cp313-*: openai-whisper build issue. *-manylinux_i686: torch dependency not available. *-musllinux_*: torch dependency not available or script needs apk for portaudio.
+CIBW_SKIP_CONFIG ?= "cp37-* pp3* cp313-* *-manylinux_i686 *-musllinux_*"
 CIBW_TEST_COMMAND ?= "echo 'No tests configured for wheels yet'" # Generic test command
 CIBW_TEST_REQUIRES ?= ""
 CIBW_OUTPUT_DIR ?= wheelhouse
@@ -95,7 +95,7 @@ format: $(VENV_DIR)/bin/activate
 # Clean build artifacts and virtual environment
 clean:
 	@echo "Cleaning build artifacts and virtual environment..."
-	rm -rf build dist src/**/*.egg-info src/**/*.so .mypy_cache $(VENV_DIR) $(C_HELPER_OUTPUT) $(C_HELPER_SRC:.c=.o)
+	rm -rf build dist wheelhouse src/**/*.egg-info src/**/*.so .mypy_cache $(VENV_DIR) $(C_HELPER_OUTPUT) $(C_HELPER_SRC:.c=.o)
 	find . -name '*.pyc' -delete
 	find . -name '__pycache__' -type d -delete
 	@echo "Clean complete."
