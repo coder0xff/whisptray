@@ -59,7 +59,7 @@ def configure_logging(verbose: bool):
             ),
             datefmt="%Y-%m-%d %H:%M:%S",
         )
-        logging.debug("Verbose logging enabled.")
+        logging.info("Verbose logging enabled.")
     else:
         logging.basicConfig(
             level=logging.INFO,
@@ -74,7 +74,7 @@ def configure_logging(verbose: bool):
     if "linux" in platform:
         setup_alsa_error_handler()
     else:
-        logging.debug("Skipping ALSA error handler setup on non-Linux platform.")
+        logging.info("Skipping ALSA error handler setup on non-Linux platform.")
 
 
 def parse_args():
@@ -158,7 +158,7 @@ def open_microphone(mic_name: str) -> speech_recognition.Microphone:
                 result = speech_recognition.Microphone(
                     sample_rate=16000, device_index=index
                 )
-                logging.debug("Using microphone: %s", name)
+                logging.info("Using microphone: %s", name)
                 break
         if result is None:
             logging.error(
@@ -166,14 +166,14 @@ def open_microphone(mic_name: str) -> speech_recognition.Microphone:
                 " microphones.",
                 mic_name,
             )
-            logging.debug("Available microphone devices are: ")
+            logging.info("Available microphone devices are: ")
             for index, name_available in enumerate(
                 speech_recognition.Microphone.list_microphone_names()
             ):
-                logging.debug('Microphone with name "%s" found', name_available)
+                logging.info('Microphone with name "%s" found', name_available)
     else:
         result = speech_recognition.Microphone(sample_rate=16000)
-        logging.debug("Using default microphone.")
+        logging.info("Using default microphone.")
 
     return result
 
@@ -203,7 +203,7 @@ class WhisptrayGui:
         )
         self._initialize_double_click_interval()
         # Start tray icon
-        logging.debug("Starting tray icon...")
+        logging.info("Starting tray icon...")
         self._setup_tray_icon()  # This will set self.app_icon
 
         # Start icon health check thread
@@ -214,7 +214,7 @@ class WhisptrayGui:
                 name="IconHealthCheckThread",
             )
             self.health_check_thread.start()
-            logging.debug("Icon health check thread started.")
+            logging.info("Icon health check thread started.")
         else:
             logging.error(
                 "App icon not initialized properly. Health check thread not started. "
@@ -225,29 +225,29 @@ class WhisptrayGui:
         """
         Runs the whisptray App.
         """
-        logging.debug("Calling app_icon.run().")
+        logging.info("Calling app_icon.run().")
         self.app_icon.run()
-        logging.debug("app_icon.run() finished.")
+        logging.info("app_icon.run() finished.")
 
     def toggle_dictation(self):
         """Toggles dictation on/off."""
-        logging.debug(
+        logging.info(
             "toggle_dictation called. Current state: %s", self.speech_to_keys.enabled
         )
         self.speech_to_keys.enabled = not self.speech_to_keys.enabled
         if self.speech_to_keys.enabled:
-            logging.debug("Dictation started by toggle.")
+            logging.info("Dictation started by toggle.")
             if self.app_icon:
                 self.app_icon.icon = WhisptrayGui._create_tray_image("record")
 
         else:
-            logging.debug("Dictation stopped by toggle.")
+            logging.info("Dictation stopped by toggle.")
             if self.app_icon:
                 self.app_icon.icon = WhisptrayGui._create_tray_image("stop")
 
     def exit_program(self):
         """Stops the program."""
-        logging.debug("exit_program called.")
+        logging.info("exit_program called.")
         if self.app_is_exiting.is_set():
             return
 
@@ -255,7 +255,7 @@ class WhisptrayGui:
 
         if self.click_timer and self.click_timer.is_alive():
             self.click_timer.cancel()
-            logging.debug("Cancelled pending click_timer on exit.")
+            logging.info("Cancelled pending click_timer on exit.")
         self.click_timer = None
         self.speech_to_keys.shutdown()
 
@@ -263,12 +263,12 @@ class WhisptrayGui:
             teardown_alsa_error_handler()
 
         if self.app_icon:
-            logging.debug("Disabling tray icon.")
+            logging.info("Disabling tray icon.")
             self.app_icon.stop()
 
     def _setup_tray_icon(self):
         """Sets up and runs the system tray icon."""
-        logging.debug("setup_tray_icon called.")
+        logging.info("setup_tray_icon called.")
         # Initial icon is 'stop' since dictation_active is False initially
         icon_image = WhisptrayGui._create_tray_image("stop")
 
@@ -292,7 +292,7 @@ class WhisptrayGui:
             )
 
         self.app_icon = pystray.Icon("whisptray_app", icon_image, "whisptray App", menu)
-        logging.debug("pystray.Icon created.")
+        logging.info("pystray.Icon created.")
 
     @staticmethod
     def _get_system_double_click_time() -> float | None:
@@ -344,7 +344,7 @@ class WhisptrayGui:
                         subprocess.TimeoutExpired,
                     ):
                         # Neither GSettings nor xrdb succeeded.
-                        logging.debug(
+                        logging.info(
                             "Could not determine double-click time from GSettings or"
                             " xrdb."
                         )
@@ -367,7 +367,7 @@ class WhisptrayGui:
                 return value_ms / 1000.0
             elif platform == "darwin":  # macOS
                 # Getting this programmatically on macOS is non-trivial. Default.
-                logging.debug("Using default double-click time for macOS.")
+                logging.info("Using default double-click time for macOS.")
         except (
             subprocess.CalledProcessError,
             FileNotFoundError,
@@ -386,12 +386,12 @@ class WhisptrayGui:
             system_interval is not None and 0.1 <= system_interval <= 2.0
         ):  # Sanity check interval
             self.effective_double_click_interval = system_interval
-            logging.debug(
+            logging.info(
                 "Using system double-click interval: %.2fs",
                 self.effective_double_click_interval,
             )
         else:
-            logging.debug(
+            logging.info(
                 "Using default double-click interval: %.2fs",
                 self.effective_double_click_interval,
             )
@@ -414,7 +414,7 @@ class WhisptrayGui:
 
     def _show_exit_dialog_actual(self):
         """Shows an exit confirmation dialog or exits directly."""
-        logging.debug("show_exit_dialog_actual called.")
+        logging.info("show_exit_dialog_actual called.")
 
         proceed_to_exit = False
         if TKINTER_AVAILABLE:
@@ -433,7 +433,7 @@ class WhisptrayGui:
                 )
                 proceed_to_exit = True  # Fallback to exit if dialog fails
         else:
-            logging.debug(
+            logging.info(
                 "tkinter not available, exiting directly without confirmation."
             )
             proceed_to_exit = True
@@ -441,19 +441,19 @@ class WhisptrayGui:
         if proceed_to_exit:
             self.exit_program()  # app_icon might be None if called early
         else:
-            logging.debug("Exit cancelled by user.")
+            logging.info("Exit cancelled by user.")
 
     def _delayed_single_click_action(self):
         """Action to perform for a single click after the double-click window."""
         if self.app_is_exiting.is_set():  # Don't toggle if we are already exiting
             return
-        logging.debug("Delayed single click action triggered.")
+        logging.info("Delayed single click action triggered.")
         self.toggle_dictation()
 
     def _icon_clicked_handler(self):  # item unused but pystray passes it
         """Handles icon clicks to differentiate single vs double clicks."""
         current_time = time.monotonic()
-        logging.debug("Icon clicked at %s", current_time)
+        logging.info("Icon clicked at %s", current_time)
 
         if (
             self.click_timer and self.click_timer.is_alive()
@@ -461,7 +461,7 @@ class WhisptrayGui:
             self.click_timer.cancel()
             self.click_timer = None
             self.last_click_time = 0.0  # Reset for next sequence
-            logging.debug("Double click detected.")
+            logging.info("Double click detected.")
             self._show_exit_dialog_actual()
         else:  # First click or click after timer expired
             self.last_click_time = current_time
@@ -476,7 +476,7 @@ class WhisptrayGui:
             )
             self.click_timer.daemon = True  # Ensure timer doesn't block exit
             self.click_timer.start()
-            logging.debug(
+            logging.info(
                 "Started click timer for %ss", self.effective_double_click_interval
             )
 
@@ -499,7 +499,7 @@ class WhisptrayGui:
             )
             return
 
-        logging.debug("Icon health check loop starting.")
+        logging.info("Icon health check loop starting.")
         while not self.app_is_exiting.is_set():
             # The act of getting and setting the icon can help issues with pystray
             current_icon_image = self.app_icon.icon
@@ -507,7 +507,7 @@ class WhisptrayGui:
 
             time.sleep(1)
 
-        logging.debug("Icon health check loop finished.")
+        logging.info("Icon health check loop finished.")
 
 
 def main():

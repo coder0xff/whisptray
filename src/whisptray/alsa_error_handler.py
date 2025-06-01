@@ -78,7 +78,7 @@ def _load_alsa_redirect_lib():
     if os.path.exists(c_redirect_lib_path):
         try:
             c_redirect_lib = ctypes.CDLL(c_redirect_lib_path)
-            logging.debug("Loaded alsa_redirect.so from: %s", c_redirect_lib_path)
+            logging.info("Loaded alsa_redirect.so from: %s", c_redirect_lib_path)
             return c_redirect_lib
         except OSError as e:
             logging.error(
@@ -95,7 +95,7 @@ def _load_alsa_redirect_lib():
             c_redirect_lib_path_found = found_libs[0]
             try:
                 c_redirect_lib = ctypes.CDLL(c_redirect_lib_path_found)
-                logging.debug(
+                logging.info(
                     "Loaded compiled C extension: %s", c_redirect_lib_path_found
                 )
                 return c_redirect_lib
@@ -109,7 +109,7 @@ def _load_alsa_redirect_lib():
             # Last resort: try loading from system path (less reliable)
             try:
                 c_redirect_lib = ctypes.CDLL("alsa_redirect.so")
-                logging.debug("Loaded alsa_redirect.so from system path.")
+                logging.info("Loaded alsa_redirect.so from system path.")
                 return c_redirect_lib
             except OSError:
                 logging.error(
@@ -138,7 +138,7 @@ def _define_c_lib_interfaces(c_lib):
         # int clear_alsa_error_handling();
         c_lib.clear_alsa_error_handling.argtypes = []
         c_lib.clear_alsa_error_handling.restype = ctypes.c_int
-        logging.debug("Successfully defined C library interfaces.")
+        logging.info("Successfully defined C library interfaces.")
     except AttributeError as e:
         logging.error(
             "Error defining C library interfaces: %s. Library might not have expected"
@@ -172,7 +172,7 @@ def setup_alsa_error_handler():
     Sets up a custom ALSA error handler using the C helper library.
     """
     if "linux" not in platform:
-        logging.debug("Skipping ALSA error handler setup on non-Linux platform.")
+        logging.info("Skipping ALSA error handler setup on non-Linux platform.")
         return
 
     try:
@@ -184,7 +184,7 @@ def setup_alsa_error_handler():
             return
 
         c_redirect_lib.register_python_alsa_callback(py_error_handler_ctype)
-        logging.debug("Registered Python ALSA error handler with C helper.")
+        logging.info("Registered Python ALSA error handler with C helper.")
 
         ret = c_redirect_lib.initialize_alsa_error_handling()
         if ret < 0:
@@ -201,7 +201,7 @@ def teardown_alsa_error_handler():
     Clears the custom ALSA error handler using the C helper library.
     """
     if "linux" not in platform:
-        logging.debug("Skipping ALSA error handler teardown on non-Linux platform.")
+        logging.info("Skipping ALSA error handler teardown on non-Linux platform.")
         return
 
     try:
@@ -219,7 +219,7 @@ def teardown_alsa_error_handler():
                 "C library failed to clear ALSA error handler. Error code: %d", ret
             )
         else:
-            logging.debug("Successfully cleared ALSA error handler via C helper.")
+            logging.info("Successfully cleared ALSA error handler via C helper.")
 
     except (OSError, AttributeError, TypeError, ValueError, ctypes.ArgumentError) as e:
         logging.error("Error during ALSA error handler teardown: %s", e, exc_info=True)

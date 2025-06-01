@@ -48,11 +48,11 @@ class SpeechToKeys:
         self._is_programmatic_typing = False  # Flag to indicate programmatic typing
         self._stop_listening_callback = None  # For the background audio listener
 
-        logging.debug("Loading Whisper model: %s", model_name)
+        logging.info("Loading Whisper model: %s", model_name)
 
         try:
             self.audio_model = whisper.load_model(model_name)
-            logging.debug("Whisper model loaded successfully.")
+            logging.info("Whisper model loaded successfully.")
         except (OSError, RuntimeError, ValueError) as e:
             logging.error("Error loading Whisper model: %s", e, exc_info=True)
             # Consider re-raising or setting a flag that initialization failed
@@ -69,7 +69,7 @@ class SpeechToKeys:
             target=self._process_audio, daemon=True, name="AudioProcessThread"
         )
         audio_thread.start()
-        logging.debug("Audio processing thread started.")
+        logging.info("Audio processing thread started.")
 
     def shutdown(self):
         """
@@ -83,14 +83,14 @@ class SpeechToKeys:
                 self.data_queue.get_nowait()
             except Empty:
                 break
-        logging.debug("SpeechToKeys shutdown complete.")
+        logging.info("SpeechToKeys shutdown complete.")
 
     def _adjust_ambient_noise(self):
         """Adjusts the recorder for ambient noise."""
         with self.source:
             try:
                 self.recorder.adjust_for_ambient_noise(self.source, duration=1)
-                logging.debug("Adjusted for ambient noise.")
+                logging.info("Adjusted for ambient noise.")
             except (
                 speech_recognition.WaitTimeoutError,
                 OSError,
@@ -123,7 +123,7 @@ class SpeechToKeys:
             data = audio.get_raw_data()
             self.data_queue.put(data)
         else:
-            logging.debug("Recording callback received and dictation is not active.")
+            logging.warning("Recording callback received but dictation is not active.")
 
     def _on_press(self, key):
         """Callback for keyboard listener."""
@@ -147,45 +147,45 @@ class SpeechToKeys:
 
     def _start_keyboard_listener(self):
         if self._keyboard_listener is None:
-            logging.debug("Starting keyboard listener.")
+            logging.info("Starting keyboard listener.")
             self._keyboard_listener = KeyboardListener(on_press=self._on_press)
             self._keyboard_listener.start()
-            logging.debug("Keyboard listener started.")
+            logging.info("Keyboard listener started.")
         else:
-            logging.debug("Keyboard listener already running.")
+            logging.info("Keyboard listener already running.")
 
     def _stop_keyboard_listener(self):
         if self._keyboard_listener is not None:
-            logging.debug("Stopping keyboard listener.")
+            logging.info("Stopping keyboard listener.")
             self._keyboard_listener.stop()
             self._keyboard_listener = None
-            logging.debug("Keyboard listener stopped.")
+            logging.info("Keyboard listener stopped.")
         else:
-            logging.debug("Keyboard listener not running or already stopped.")
+            logging.info("Keyboard listener not running or already stopped.")
 
     def _start_mouse_listener(self):
         if self._mouse_listener is None:
-            logging.debug("Starting mouse listener.")
+            logging.info("Starting mouse listener.")
             self._mouse_listener = MouseListener(on_click=self._on_click)
             self._mouse_listener.start()
-            logging.debug("Mouse listener started.")
+            logging.info("Mouse listener started.")
         else:
-            logging.debug("Mouse listener already running.")
+            logging.info("Mouse listener already running.")
 
     def _stop_mouse_listener(self):
         if self._mouse_listener is not None:
-            logging.debug("Stopping mouse listener.")
+            logging.info("Stopping mouse listener.")
             self._mouse_listener.stop()
             self._mouse_listener = None
-            logging.debug("Mouse listener stopped.")
+            logging.info("Mouse listener stopped.")
         else:
-            logging.debug("Mouse listener not running or already stopped.")
+            logging.info("Mouse listener not running or already stopped.")
 
     def _process_audio(self):
         """Processes audio from the queue and performs transcription."""
         while True:
             if not self.dictation_active:
-                logging.debug("Recording callback received and dictation is not active.")
+                logging.debug("Process audio running but dictation is not active.")
                 sleep(0.1)
                 continue
 
@@ -237,7 +237,7 @@ class SpeechToKeys:
             if self.is_first_phrase:
                 text = text.lstrip()  # There was no previous phrase, so remove any
                 # leading whitespace that the transcription might have added.
-            logging.debug("Transcribed text: '%s'", text)  # Can be very verbose
+            logging.info("Transcribed text: '%s'", text)  # Can be very verbose
 
             if text:
                 self._is_programmatic_typing = True
@@ -285,14 +285,14 @@ class SpeechToKeys:
     @enabled.setter
     def enabled(self, value: bool):
         if value == self.dictation_active:
-            logging.debug(
+            logging.info(
                 "SpeechToKeys.enabled changing from %s to %s (no change)",
                 self.dictation_active,
                 value,
             )
             return
 
-        logging.debug(
+        logging.info(
             "SpeechToKeys.enabled changing from %s to %s",
             self.dictation_active,
             value,
@@ -315,7 +315,7 @@ class SpeechToKeys:
                     self._record_callback,
                     phrase_time_limit=self.record_timeout,
                 )
-                logging.debug("Background audio listener started.")
+                logging.info("Background audio listener started.")
             except (OSError, AttributeError, RuntimeError) as e:
                 logging.error(
                     "Error starting background audio listener: %s", e, exc_info=True
@@ -332,7 +332,7 @@ class SpeechToKeys:
             assert (
                 self._stop_listening_callback is not None
             ), "Stop listening callback should not be None"
-            logging.debug("Stopping background audio listener.")
+            logging.info("Stopping background audio listener.")
             self._stop_listening_callback(wait_for_stop=True)
             self._stop_listening_callback = None
 

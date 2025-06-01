@@ -52,7 +52,6 @@ def main():
                     if ord(char) == 3: # CTRL+C
                         raise KeyboardInterrupt
                     chars_typed_count += 1
-                    # logging.debug(f"Char read: '{char}' (ASCII: {ord(char)}), Total chars: {chars_typed_count}")
             finally:
                 if old_settings: # Ensure settings are restored
                     termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
@@ -64,7 +63,6 @@ def main():
                     logging.warning("Empty input or EOF received. Exiting loop.")
                     break
                 chars_typed_count += len(line_input)
-                # logging.debug(f"Line read: '{line_input}', Total chars: {chars_typed_count}")
 
         logging.info(f"Read approximately {chars_typed_count} characters. Proceeding to shutdown.")
 
