@@ -119,8 +119,11 @@ class SpeechToKeys:
         audio: An AudioData containing the recorded bytes.
         """
         if self.dictation_active:
+            logging.debug("Recording callback received and dictation is active.")
             data = audio.get_raw_data()
             self.data_queue.put(data)
+        else:
+            logging.debug("Recording callback received and dictation is not active.")
 
     def _on_press(self, key):
         """Callback for keyboard listener."""
@@ -182,11 +185,13 @@ class SpeechToKeys:
         """Processes audio from the queue and performs transcription."""
         while True:
             if not self.dictation_active:
+                logging.debug("Recording callback received and dictation is not active.")
                 sleep(0.1)
                 continue
 
             now = datetime.now(timezone.utc)
             if not self.data_queue.empty():
+                logging.debug("Processing audio from queue.")
                 phrase_complete = False
                 if (
                     self.phrase_time is not None
@@ -223,6 +228,7 @@ class SpeechToKeys:
                 sleep(0.1)
 
     def _transcribe(self, previous_phrase_done, audio_samples):
+        logging.debug("Transcribing audio.")
         try:
             result = self.audio_model.transcribe(
                 audio_samples, fp16=torch.cuda.is_available()
