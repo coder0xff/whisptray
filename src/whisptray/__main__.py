@@ -7,6 +7,7 @@ import subprocess
 import threading
 import time
 from sys import platform
+import importlib.metadata
 
 import speech_recognition
 from PIL import Image, ImageDraw
@@ -123,6 +124,12 @@ def parse_args():
         "--verbose",
         action="store_true",
         help="Enable informational logging. Debug logs are not affected by this flag.",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {importlib.metadata.version('whisptray')}",
+        help="Show program's version number and exit.",
     )
     if "linux" in platform:
         parser.add_argument(
