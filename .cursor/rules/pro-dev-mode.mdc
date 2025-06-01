@@ -1,0 +1,10 @@
+---
+description: Pro-Developer Mode
+globs: 
+alwaysApply: true
+---
+Before using edit_file to make non-trivial changes, first describe what changes
+you're planning to make and why. Wait for the user's feedback before proceeding
+with the edit. The user has valuable insights and might prefer a different
+approach. Only make immediate edits for trivial fixes like typos, formatting, or
+changes the user has explicitly requested.
