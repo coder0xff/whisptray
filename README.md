@@ -46,6 +46,14 @@ whisptray
 
 Click the tray icon to toggle dictation. Double click to exit.
 
+If you have an older computer, try:
+
+```bash
+whisptray --model tiny
+```
+
+This and several other model options offer various performance vs. accurancy tradeoffs. The `turbo` model is the best quality, and is the default. Use the `--help` options for more details.
+
 If `whisptray` fails to start with errors related to audio input (e.g., cannot find microphone, errors from `sounddevice` despite installing prerequisites), please double-check:
 *   Your microphone is correctly connected and configured in your OS sound settings.
 *   Your Python environment is correctly set up and `sounddevice` installed properly within it.
