@@ -34,20 +34,20 @@ class SpeechToKeys:
         activity_ambient_multiplier: float = 1.5,
         phrase_timeout: float = 3.0,
     ):
-        self.key_event_sleep_time = 1.0 / max_key_rate
-        self.phrase_timeout = timedelta(seconds=phrase_timeout)
-        self.data_queue = Queue[np.ndarray]()
-        self.float_samples: np.ndarray = np.array([], dtype=np.float32)
-        self.phrase_time = None
-        self.buffer = ""
-        self.is_first_phrase = True
-        self.dictation_active = False
-        self.keyboard = KeyboardController()
+        self._key_event_sleep_time = 1.0 / max_key_rate
+        self._phrase_timeout = timedelta(seconds=phrase_timeout)
+        self._data_queue = Queue[np.ndarray]()
+        self._float_samples: np.ndarray = np.array([], dtype=np.float32)
+        self._last_deque_time = None
+        self._buffer = ""
+        self._is_first_phrase = True
+        self._dictation_active = False
+        self._keyboard = KeyboardController()
         self._keyboard_listener = None
         self._mouse_listener = None
         self._is_programmatic_typing = False
 
-        self.audio_capture = AudioCapture(
+        self._audio_capture = AudioCapture(
             on_audio=self._on_audio,
             device=device,
             ambient_duration=ambient_duration,
@@ -55,7 +55,7 @@ class SpeechToKeys:
         )
 
         logging.info("Loading Whisper model: %s", model_name)
-        self.audio_model = whisper.load_model(model_name)
+        self._audio_model = whisper.load_model(model_name)
         logging.info("Whisper model loaded successfully.")
 
         audio_thread = Thread(
@@ -76,22 +76,23 @@ class SpeechToKeys:
         Shuts down the speech to keys.
         """
         self.enabled = False
-
-        while not self.data_queue.empty():
+        self._audio_capture.shutdown()
+        
+        while not self._data_queue.empty():
             try:
-                self.data_queue.get_nowait()
+                self._data_queue.get_nowait()
             except Empty:
                 break
         logging.info("SpeechToKeys shutdown complete.")
 
     def _reset(self):
-        self.float_samples = np.array([], dtype=np.float32)
-        self.phrase_time = None
-        self.buffer = ""
-        self.is_first_phrase = True
-        while not self.data_queue.empty():
+        self._float_samples = np.array([], dtype=np.float32)
+        self._last_deque_time = None
+        self._buffer = ""
+        self._is_first_phrase = True
+        while not self._data_queue.empty():
             try:
-                self.data_queue.get_nowait()
+                self._data_queue.get_nowait()
             except Empty:
                 break
 
@@ -100,9 +101,9 @@ class SpeechToKeys:
         Threaded callback function to receive audio data when recordings finish.
         audio: An AudioData containing the recorded bytes.
         """
-        if self.dictation_active:
+        if self._dictation_active:
             logging.debug("Recording callback received and dictation is active.")
-            self.data_queue.put(audio)
+            self._data_queue.put(audio)
         else:
             logging.warning("Recording callback received but dictation is not active.")
 
@@ -160,47 +161,47 @@ class SpeechToKeys:
     def _process_audio(self):
         """Processes audio from the queue and performs transcription."""
         while True:
-            if not self.dictation_active:
+            if not self._dictation_active:
                 logging.debug("_process_audio running but dictation is not active.")
                 sleep(0.1)
                 continue
 
             now = datetime.now(timezone.utc)
-            if not self.data_queue.empty():
+            if not self._data_queue.empty():
                 logging.debug("Processing audio from queue.")
                 previous_phrase_done = False
                 if (
-                    self.phrase_time is not None
-                    and now - self.phrase_time > self.phrase_timeout
+                    self._last_deque_time is not None
+                    and now - self._last_deque_time > self._phrase_timeout
                 ):
-                    self.float_samples = np.array([], dtype=np.float32)
+                    self._float_samples = np.array([], dtype=np.float32)
                     previous_phrase_done = True
                     logging.info("The previous phrase ended")
-                self.phrase_time = now
 
+                self._last_deque_time = now
                 temp = []
-                while not self.data_queue.empty():
+                while not self._data_queue.empty():
                     try:
-                        temp.append(self.data_queue.get_nowait())
+                        temp.append(self._data_queue.get_nowait())
                     except Empty:
                         break
 
                 new_samples = np.concatenate(temp).astype(np.float32) / 32768.0
                 new_samples = new_samples.flatten()
-                self.float_samples = np.concatenate((self.float_samples, new_samples))
+                self._float_samples = np.concatenate((self._float_samples, new_samples))
 
-                self._transcribe(previous_phrase_done, self.float_samples)
+                self._transcribe(previous_phrase_done, self._float_samples)
             else:
                 sleep(0.1)
 
     def _transcribe(self, previous_phrase_done, audio_data):
         logging.debug("Transcribing audio.")
         try:
-            result = self.audio_model.transcribe(
+            result = self._audio_model.transcribe(
                 audio_data, fp16=torch.cuda.is_available()
             )
             text = result["text"]
-            if self.is_first_phrase:
+            if self._is_first_phrase:
                 # There was no previous phrase, so remove any leading whitespace that
                 # the transcription might have added.
                 text = text.lstrip()
@@ -211,37 +212,38 @@ class SpeechToKeys:
                 if previous_phrase_done:
                     # Sometimes the transciption misses ending punctuation if it had
                     # thought more words would come, but did not.
-                    if self.buffer and self.buffer.rstrip()[-1] not in [".", "!", "?"]:
-                        self.keyboard.type(".")
-                        sleep(self.key_event_sleep_time)
+                    if self._buffer and self._buffer.rstrip()[-1] not in [".", "!", "?"]:
+                        self._keyboard.type(".")
+                        sleep(self._key_event_sleep_time)
                     for char in text:
-                        self.keyboard.type(char)
-                        sleep(self.key_event_sleep_time)
-                    self.buffer = text
-                    self.is_first_phrase = False
+                        self._keyboard.type(char)
+                        sleep(self._key_event_sleep_time)
+                    self._is_first_phrase = False
+                    self._buffer = ""
+                    self._float_samples = np.array([], dtype=np.float32)
                 else:
-                    if self.buffer:
+                    if self._buffer:
                         # find the first index where the text and buffer differ
                         index = next(
                             (
                                 i
-                                for i, (t, b) in enumerate(zip(text, self.buffer))
+                                for i, (t, b) in enumerate(zip(text, self._buffer))
                                 if t != b
                             ),
-                            len(self.buffer),
+                            len(self._buffer),
                         )
-                        for _ in range(index, len(self.buffer)):
-                            self.keyboard.press(Key.backspace)
+                        for _ in range(index, len(self._buffer)):
+                            self._keyboard.press(Key.backspace)
                             # Web pages sometimes struggle with fast keystrokes.
-                            sleep(self.key_event_sleep_time)
-                            self.keyboard.release(Key.backspace)
-                            sleep(self.key_event_sleep_time)
+                            sleep(self._key_event_sleep_time)
+                            self._keyboard.release(Key.backspace)
+                            sleep(self._key_event_sleep_time)
                     else:
                         index = 0
 
                     for i in range(index, len(text)):
-                        self.keyboard.type(text[i])
-                    self.buffer = text
+                        self._keyboard.type(text[i])
+                    self._buffer = text
         finally:
             self._is_programmatic_typing = False
 
@@ -250,21 +252,21 @@ class SpeechToKeys:
         """
         Returns the enabled state of the speech to keys.
         """
-        return self.dictation_active
+        return self._dictation_active
 
     @enabled.setter
     def enabled(self, value: bool):
-        if value == self.dictation_active:
+        if value == self._dictation_active:
             logging.info(
                 "SpeechToKeys.enabled changing from %s to %s (no change)",
-                self.dictation_active,
+                self._dictation_active,
                 value,
             )
             return
 
         logging.info(
             "SpeechToKeys.enabled changing from %s to %s",
-            self.dictation_active,
+            self._dictation_active,
             value,
         )
 
@@ -273,10 +275,10 @@ class SpeechToKeys:
             self._start_mouse_listener()
 
             self._reset()
-            self.dictation_active = True
+            self._dictation_active = True
 
             try:
-                self.audio_capture.start()
+                self._audio_capture.start()
                 logging.info("Background audio listener started.")
             except (OSError, AttributeError, RuntimeError) as e:
                 logging.error(
@@ -287,9 +289,9 @@ class SpeechToKeys:
                 return
 
         else:
-            self.dictation_active = False  # Set this first
+            self._dictation_active = False  # Set this first
             self._stop_keyboard_listener()  # Stop keyboard listener
             self._stop_mouse_listener()  # Stop mouse listener
-            self.audio_capture.stop()
+            self._audio_capture.stop()
 
             self._reset()

@@ -168,6 +168,7 @@ class AudioCapture:
 
         if self._active_blocks_count >= ACTIVATION_BLOCKS:
             if len(self._capture_blocks) > CALLBACK_BLOCKS:
+                logging.debug("Flushing blocks to callback thread")
                 self._flush_blocks_to_callback_thread()
         else:
             # Discard old blocks
@@ -204,6 +205,9 @@ class AudioCapture:
             self._stream.close()
             self._stream = None
 
+    def shutdown(self):
+        """Shutdown the audio capture."""
+        self.stop()
         # Clear buffers
         self._callback_blocks.put(None)  # Poison pill
         self._callback_thread.join()
