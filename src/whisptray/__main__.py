@@ -44,6 +44,7 @@ DEFAULT_DEVICE = None  # Sounddevice will use default device
 DEFAULT_MODEL_NAME = "turbo"
 DEFAULT_AMBIENT_DURATION = 1.0  # Default for ambient_duration
 DEFAULT_ENERGY_MULTIPLIER = 1.5  # Default for energy_threshold_multiplier
+DEFAULT_MAX_KEY_RATE = 250.0  # Default for max_key_rate
 
 
 def _configure_logging(verbose: bool):
@@ -72,7 +73,9 @@ def _configure_logging(verbose: bool):
 
 def _parse_args():
     parser = argparse.ArgumentParser(
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        description="whisptray is a tool that uses your microphone to produce keyboard input.",
+        epilog="See https://github.com/coder0xff/whisptray for more information.",
     )
     parser.add_argument(
         "--device",
@@ -86,6 +89,12 @@ def _parse_args():
         default=DEFAULT_MODEL_NAME,
         help="Model to use",
         choices=["tiny", "base", "small", "medium", "large", "turbo"],
+    )
+    parser.add_argument(
+        "--max-key-rate",
+        default=DEFAULT_MAX_KEY_RATE,
+        help="Maximum key press rate in characters per second.",
+        type=float,
     )
     parser.add_argument(
         "--ambient_duration",
@@ -103,7 +112,7 @@ def _parse_args():
         "-v",
         "--verbose",
         action="store_true",
-        help="Enable informational logging. Debug logs are not affected by this flag.",
+        help="Enable verbose logging.",
     )
     parser.add_argument(
         "--version",
@@ -124,6 +133,7 @@ class WhisptrayGui:
         self,
         device: Optional[str | int],
         model_name: str,
+        max_key_rate: float,
         ambient_duration: float,
         energy_multiplier: float,  # Changed from energy_threshold
     ):
@@ -144,6 +154,7 @@ class WhisptrayGui:
         self.speech_to_keys = SpeechToKeys(
             model_name=model_name,
             device=device,
+            max_key_rate=max_key_rate,
             ambient_duration=ambient_duration,
             activity_ambient_multiplier=energy_multiplier,
         )
@@ -426,6 +437,7 @@ def main():
     gui = WhisptrayGui(
         args.device,
         model_name,
+        args.max_key_rate,
         args.ambient_duration,
         args.energy_multiplier,
     )

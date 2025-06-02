@@ -70,13 +70,17 @@ whisptray --device 2 --energy_multiplier 2.0
 
 *   `--device DEVICE`: Microphone name or ID to use (e.g., "pulse", "USB Microphone", or an integer ID like `1`). 
     Pass `list` to see available microphone IDs and names. If omitted, the system default microphone is used.
-*   `--model MODEL`: Whisper model to use. (choices: "tiny", "base", "small", "medium", "large", "turbo"; default: "turbo"). 
-    Non-English models are generally the base versions (e.g., "small" not "small.en"). "large" and "turbo" are multilingual by default.
+*   `--model MODEL`: Whisper model to use. (choices: "tiny", "base", "small", "medium", "large", "turbo"; default: "turbo").
+*   `--max_key_rate COUNT`: The maximum rate of generated keystrokes per second. Higher values are more responsive. Lower values give better compatibility with slow apps. (e.g. 1000 for native apps, 250 for glitchy web apps.)
 *   `--ambient_duration SECONDS`: Duration (in seconds) to measure ambient noise before starting dictation. This helps set a baseline for voice activity detection. (default: 1.0)
 *   `--energy_multiplier MULTIPLIER`: Multiplier applied to the measured ambient noise level to set the energy threshold for voice activity detection. Higher values are less sensitive. (default: 1.5)
-*   `-v`, `--verbose`: Enable more detailed informational logging.
+*   `-v`, `--verbose`: Enable debug logging.
 *   `--version`: Show program's version number and exit.
 *   `--help`: Show the program's options and exit.
+
+## Troubleshooting
+
+If the text appears garbled in some applications, trying specifying a slower key rate using the `--max_key_rate` command line argument.
 
 ## Development
 

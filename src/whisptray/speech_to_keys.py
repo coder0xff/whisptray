@@ -29,10 +29,12 @@ class SpeechToKeys:
         self,
         model_name: str = "turbo",
         device: Optional[str | int] = None,
+        max_key_rate: float = 500.0,
         ambient_duration: float = 1.0,
         activity_ambient_multiplier: float = 1.5,
         phrase_timeout: float = 3.0,
     ):
+        self.key_event_sleep_time = 1.0 / max_key_rate
         self.phrase_timeout = timedelta(seconds=phrase_timeout)
         self.data_queue = Queue[np.ndarray]()
         self.float_samples: np.ndarray = np.array([], dtype=np.float32)
@@ -211,7 +213,10 @@ class SpeechToKeys:
                     # thought more words would come, but did not.
                     if self.buffer and self.buffer.rstrip()[-1] not in [".", "!", "?"]:
                         self.keyboard.type(".")
-                    self.keyboard.type(text)
+                        sleep(self.key_event_sleep_time)
+                    for char in text:
+                        self.keyboard.type(char)
+                        sleep(self.key_event_sleep_time)
                     self.buffer = text
                     self.is_first_phrase = False
                 else:
@@ -228,9 +233,9 @@ class SpeechToKeys:
                         for _ in range(index, len(self.buffer)):
                             self.keyboard.press(Key.backspace)
                             # Web pages sometimes struggle with fast keystrokes.
-                            sleep(0.001)
+                            sleep(self.key_event_sleep_time)
                             self.keyboard.release(Key.backspace)
-                            sleep(0.001)
+                            sleep(self.key_event_sleep_time)
                     else:
                         index = 0
 
