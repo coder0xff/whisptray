@@ -12,35 +12,45 @@ A simple dictation program that uses OpenAI's Whisper for speech-to-text,
 
 ## Installation
 
-**Prerequisites:**
+Some common prerequisites are required before installation.
 
-1.  **A working microphone** recognized by your operating system.
+**Prerequisites for Ubuntu:**
 
-2.  **`ffmpeg`** (for Whisper audio processing):
-    *   **Debian/Ubuntu:** `sudo apt update && sudo apt install ffmpeg`
-    *   **macOS (Homebrew):** `brew install ffmpeg`
-    *   **Windows:** Download from [ffmpeg.org](https://ffmpeg.org/download.html) and add to PATH.
+```bash
+sudo apt update && sudo apt install build-essential python3-dev libportaudio2 ffmpeg
+```
 
-3.  **Audio System Libraries (Linux - if `sounddevice` fails):**
-    `whisptray` uses the `sounddevice` library, which usually installs smoothly. However, on some minimal Linux systems, or if you encounter issues with `sounddevice` not finding audio devices, you might need to ensure underlying system audio libraries are present. The most common one is `libportaudio2`:
-    *   **Debian/Ubuntu:** `sudo apt-get install libportaudio2`
-    *   For other distributions, search for their PortAudio package.
+**Prerequisites for Fedora:**
+
+```bash
+sudo dnf groupinstall "Development Tools" && sudo dnf install python3-devel alsa-lib-devel ffmpeg
+```
 
 **Installation Command:**
 
-Once all prerequisites are met, you can install `whisptray`:
+```bash
+pip3 install whisptray
+```
+
+Or if you have a newer system that requires pipx to install Python applications:
 
 ```bash
-pip install whisptray
+pipx install whisptray
 ```
+
+## Usage
+
+```bash
+whisptray
+```
+
+Click the tray icon to toggle dictation. Double click to exit.
 
 If `whisptray` fails to start with errors related to audio input (e.g., cannot find microphone, errors from `sounddevice` despite installing prerequisites), please double-check:
 *   Your microphone is correctly connected and configured in your OS sound settings.
 *   Your Python environment is correctly set up and `sounddevice` installed properly within it.
 
-## Usage
-
-Click the tray icon to toggle dictation. Double click to exit.
+## Advanced Usage
 
 You can customize the behavior using command-line arguments. For example, to use a specific microphone (ID 2, found by running with `--device list`) and a different energy multiplier:
 
@@ -58,6 +68,7 @@ whisptray --device 2 --energy_multiplier 2.0
 *   `--energy_multiplier MULTIPLIER`: Multiplier applied to the measured ambient noise level to set the energy threshold for voice activity detection. Higher values are less sensitive. (default: 1.5)
 *   `-v`, `--verbose`: Enable more detailed informational logging.
 *   `--version`: Show program's version number and exit.
+*   `--help`: Show the program's options and exit.
 
 ## Development
 
