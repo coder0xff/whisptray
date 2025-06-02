@@ -1,312 +1,209 @@
 """Audio capture module using sounddevice with voice activity detection."""
 
-import logging
 import collections
-from threading import Lock, Event
+import logging
+import time
+from queue import Queue
+from threading import Event, Thread
 from typing import Callable, Optional
+
 import numpy as np
 import sounddevice as sd
 
-# Audio parameters
-DEFAULT_SAMPLE_RATE = 16000
-DEFAULT_CHANNELS = 1
-DEFAULT_DTYPE = 'int16'
-DEFAULT_BLOCK_DURATION_MS = 30  # Duration of each audio block in milliseconds
+# Default parameters
+DEFAULT_AMBIENT_DURATION_SECONDS = 1.0  # Duration to measure ambient noise
+DEFAULT_ACTIVITY_AMBIENT_MULTIPLIER = 1.5  # Multiply ambient RMS by this for threshold
 
-# Voice activity detection parameters
-DEFAULT_AMBIENT_DURATION_SECONDS = 2.0  # Duration to measure ambient noise
-DEFAULT_ENERGY_THRESHOLD_MULTIPLIER = 1.5  # Multiply ambient RMS by this for speech threshold
-DEFAULT_PRE_SPEECH_BUFFER_BLOCKS = 5  # Number of blocks to keep before speech starts
-DEFAULT_POST_SPEECH_BLOCKS = 10  # Number of silent blocks needed to consider speech ended
-DEFAULT_MIN_SPEECH_BLOCKS = 5  # Minimum blocks for valid speech (avoid false positives)
-DEFAULT_CONSECUTIVE_SECONDS_FOR_START = 0.4  # Consecutive seconds above threshold to start speech
-DEFAULT_CONSECUTIVE_BLOCKS_FOR_START = int(DEFAULT_CONSECUTIVE_SECONDS_FOR_START / DEFAULT_BLOCK_DURATION_MS * 1000)
-DEFAULT_CALLBACK_BUFFER_DURATION = 0.5  # Seconds of audio to buffer before calling callback
+# Audio constants
+SAMPLE_RATE = 14400
+CHANNELS = 1
+DTYPE = "int16"
+BLOCK_SECONDS = 0.03  # Duration of each audio block in seconds
+
+# Detection constants
+ACTIVATION_SECONDS = 0.4  # Length of sound needed to activate
+DEACTIVATION_SECONDS = 0.5  # Length of silence needed to deactivate
+LEAD_SECONDS = 0.1  # Additional time before audio detection to include
+
+# Callback constants
+CALLBACK_BUFFER_SECONDS = 0.5
+
+# Computed constants
+BLOCK_SIZE = int(BLOCK_SECONDS * SAMPLE_RATE)  # Size of each audio block in samples
+ACTIVATION_BLOCKS = int(ACTIVATION_SECONDS / BLOCK_SECONDS)
+DEACTIVATION_BLOCKS = int(DEACTIVATION_SECONDS / BLOCK_SECONDS)
+LEAD_BLOCKS = int(LEAD_SECONDS / BLOCK_SECONDS)
+CALLBACK_BLOCKS = int(CALLBACK_BUFFER_SECONDS / BLOCK_SECONDS)
 
 
+# pylint: disable=too-many-instance-attributes
 class AudioCapture:
-    """Captures audio with voice activity detection and provides speech segments."""
-    
+    """Captures audio with voice activity detection."""
+
     def __init__(
         self,
+        on_audio: Callable[[np.ndarray], None],
         device: Optional[int | str] = None,
-        sample_rate: int = DEFAULT_SAMPLE_RATE,
-        channels: int = DEFAULT_CHANNELS,
-        dtype: str = DEFAULT_DTYPE,
-        block_duration_ms: int = DEFAULT_BLOCK_DURATION_MS,
         ambient_duration: float = DEFAULT_AMBIENT_DURATION_SECONDS,
-        energy_threshold_multiplier: float = DEFAULT_ENERGY_THRESHOLD_MULTIPLIER,
-        pre_speech_buffer_blocks: int = DEFAULT_PRE_SPEECH_BUFFER_BLOCKS,
-        post_speech_blocks: int = DEFAULT_POST_SPEECH_BLOCKS,
-        min_speech_blocks: int = DEFAULT_MIN_SPEECH_BLOCKS,
-        on_audio_block: Optional[Callable[[np.ndarray], None]] = None,
-        callback_buffer_duration: float = DEFAULT_CALLBACK_BUFFER_DURATION,
+        activity_ambient_multiplier: float = DEFAULT_ACTIVITY_AMBIENT_MULTIPLIER,
     ):
         """
         Initialize AudioCapture.
-        
+
         Args:
+            on_audio_block: Callback for each audio block during speech
             device: Audio input device (None for default)
-            sample_rate: Sample rate in Hz
-            channels: Number of audio channels
-            dtype: Audio data type ('int16', 'int32', 'float32')
-            block_duration_ms: Duration of each audio block in milliseconds
             ambient_duration: Seconds to measure ambient noise
             energy_threshold_multiplier: Multiplier for ambient RMS to set threshold
-            pre_speech_buffer_blocks: Blocks to keep before speech starts
-            post_speech_blocks: Silent blocks needed to end speech
-            min_speech_blocks: Minimum blocks for valid speech
-            on_audio_block: Callback for each audio block during speech
-            callback_buffer_duration: Seconds of audio to accumulate before calling callback
         """
-        self.device = device
-        self._sample_rate = sample_rate
-        self.channels = channels
-        self.dtype = dtype
-        self.blocksize = int(sample_rate * block_duration_ms / 1000)
-        
-        # VAD parameters
-        self.ambient_duration = ambient_duration
-        self.energy_threshold_multiplier = energy_threshold_multiplier
-        self.pre_speech_buffer_blocks = pre_speech_buffer_blocks
-        self.post_speech_blocks = post_speech_blocks
-        self.min_speech_blocks = min_speech_blocks
-        self.callback_buffer_duration = callback_buffer_duration
-        self.callback_buffer_blocks = int(callback_buffer_duration * 1000 / block_duration_ms)
-        
+        assert on_audio is not None
+        self._on_audio = on_audio
+        self._device = device
+        self._ambient_duration = ambient_duration
+        self._activity_ambient_multiplier = activity_ambient_multiplier
+
         # State
-        self.ambient_rms = None
-        self.energy_threshold = None
-        self.is_speech_active = False
-        self.silent_blocks_count = 0
-        self.speech_blocks_count = 0
-        self.consecutive_above_threshold = 0  # Track consecutive blocks above threshold
-        self.pre_speech_buffer: collections.deque[np.ndarray] = collections.deque(maxlen=pre_speech_buffer_blocks)
-        self.speech_data: list[np.ndarray] = []
-        self.callback_buffer: list[np.ndarray] = []  # Buffer for callback
-        self.lock = Lock()
+        self._activity_threshold: float = float("inf")
+        self._active_blocks_count = 0
+        self._silent_blocks_count = 0
+        self._callback_blocks: Queue[np.ndarray] = Queue()
+        self._capture_blocks: collections.deque[np.ndarray] = collections.deque()
         self._stream = None
         self._stop_event = Event()
-        
-        # Callback
-        self.on_audio_block = on_audio_block
-        
-        # Log device info
-        self._log_device_info()
-    
-    @property
-    def sample_rate(self) -> int:
-        """Get the sample rate in Hz."""
-        return self._sample_rate
-    
-    def _log_device_info(self):
-        """Log information about the selected audio device."""
-        try:
-            if self.device is not None:
-                device_info = sd.query_devices(self.device, 'input')
-                logging.info(f"Audio device: {device_info['name']} (ID: {self.device})")
-            else:
-                default_device = sd.default.device[0]
-                if default_device is not None:
-                    device_info = sd.query_devices(default_device, 'input')
-                    logging.info(f"Audio device: {device_info['name']} (default, ID: {default_device})")
-                else:
-                    logging.info("Audio device: System default")
-        except Exception as e:
-            logging.warning(f"Could not query audio device info: {e}")
-    
-    def calculate_rms(self, audio_data: np.ndarray) -> float:
-        """Calculate RMS (Root Mean Square) energy of audio data."""
-        audio_float = audio_data.astype(np.float64)
-        return np.sqrt(np.mean(audio_float ** 2))
-    
-    def measure_ambient_noise(self):
+        self._callback_thread = Thread(target=self._callback_worker, daemon=True)
+        self._callback_thread.start()
+
+    @staticmethod
+    def query_devices():
+        """
+        Lists the available input audio devices using sounddevice.
+        """
+        print(sd.query_devices())
+
+    @staticmethod
+    def _iqr_rms(samples: np.ndarray) -> float:
+        """Calculate a robust RMS-like value by filtering power outliers using Tukey's
+        fences."""
+        samples = samples.astype(np.float64)
+        unbiased_samples = samples - np.mean(samples)
+        powers = unbiased_samples**2
+        q1 = np.percentile(powers, 25)
+        q3 = np.percentile(powers, 75)
+        iqr = q3 - q1
+        lower = q1 - 1.5 * iqr
+        upper = q3 + 1.5 * iqr
+        filtered_powers = powers[(powers >= lower) & (powers <= upper)]
+        return np.sqrt(np.mean(filtered_powers))
+
+    def _measure_ambient_noise(self):
         """Measure ambient noise level over a period of time."""
-        logging.info(f"Measuring ambient noise for {self.ambient_duration} seconds...")
-        
-        rms_values = []
-        
-        def callback(indata, frames, time, status):
+        logging.info(
+            "Measuring ambient noise for %s seconds...", self._ambient_duration
+        )
+
+        blocks = []
+
+        def callback(
+            indata: np.ndarray, _frames: int, _time, status: sd.CallbackFlags
+        ) -> None:
             if status:
-                logging.warning(f"Audio status during ambient measurement: {status}")
-            rms = self.calculate_rms(indata[:, 0] if indata.shape[1] > 1 else indata.flatten())
-            rms_values.append(rms)
-        
+                raise RuntimeError(f"Audio status during ambient measurement: {status}")
+            blocks.append(indata)
+
         with sd.InputStream(
-            samplerate=self._sample_rate,
-            channels=self.channels,
-            dtype=self.dtype,
-            blocksize=self.blocksize,
+            samplerate=SAMPLE_RATE,
+            channels=CHANNELS,
+            dtype=DTYPE,
+            blocksize=BLOCK_SIZE,
             callback=callback,
-            device=self.device
+            device=self._device,
         ):
             # Use Event.wait instead of time.sleep for interruptibility
-            self._stop_event.wait(self.ambient_duration)
-        
-        if rms_values:
-            # Use 75th percentile instead of median to better capture ambient variation
-            self.ambient_rms = np.percentile(rms_values, 75)
-            self.energy_threshold = self.ambient_rms * self.energy_threshold_multiplier
-            
-            logging.info(f"Ambient RMS (75th percentile): {self.ambient_rms:.2f}")
-            logging.info(f"Energy threshold: {self.energy_threshold:.2f}")
-            
-            # Log some statistics for debugging
-            logging.debug(f"Ambient stats - Min: {np.min(rms_values):.2f}, "
-                         f"25th: {np.percentile(rms_values, 25):.2f}, "
-                         f"Median: {np.median(rms_values):.2f}, "
-                         f"75th: {np.percentile(rms_values, 75):.2f}, "
-                         f"Max: {np.max(rms_values):.2f}")
-        else:
-            logging.warning("No ambient noise samples collected")
-            # Set reasonable defaults
-            self.ambient_rms = 100.0
-            self.energy_threshold = 150.0
-    
-    def _audio_callback(self, indata, frames, time, status):
+            time.sleep(self._ambient_duration)
+
+        audio_floats = np.concatenate(blocks)
+        self._activity_threshold = (
+            self._iqr_rms(audio_floats) * self._activity_ambient_multiplier
+        )
+
+    def _callback_worker(self):
+        while not self._stop_event.is_set():
+            data = self._callback_blocks.get()
+            if data is None:
+                break  # Poison pill
+            self._on_audio(data)
+            self._callback_blocks.task_done()
+
+    def _flush_blocks_to_callback_thread(self):
+        """Flush blocks to the callback."""
+        if self._capture_blocks:
+            self._callback_blocks.put(np.concatenate(self._capture_blocks))
+            self._capture_blocks.clear()
+
+    def _audio_callback(
+        self, indata: np.ndarray, _frames: int, _time, status: sd.CallbackFlags
+    ) -> None:
         """Process audio blocks for voice activity detection."""
         if status:
-            logging.warning(f"Audio status: {status}")
-        
+            logging.warning("Audio status: %s", status)
+
         if self._stop_event.is_set():
             return
-            
-        audio_block = indata[:, 0].copy() if indata.shape[1] > 1 else indata.flatten().copy()
-        rms = self.calculate_rms(audio_block)
-        
-        # Log block RMS for debugging
-        if rms > self.energy_threshold * 0.8:  # Only log blocks close to or above threshold
-            logging.debug(f"Block RMS: {rms:.2f} {'[ABOVE THRESHOLD]' if rms > self.energy_threshold else '[approaching threshold]'}")
-        
-        with self.lock:
-            # Always add to pre-speech buffer (it's a circular buffer)
-            self.pre_speech_buffer.append(audio_block)
-            
-            if not self.is_speech_active:
-                # Check if speech is starting
-                if rms > self.energy_threshold:
-                    self.consecutive_above_threshold += 1
-                    
-                    # Require multiple consecutive blocks above threshold
-                    if self.consecutive_above_threshold >= DEFAULT_CONSECUTIVE_BLOCKS_FOR_START:
-                        self.is_speech_active = True
-                        self.speech_blocks_count = self.consecutive_above_threshold
-                        self.silent_blocks_count = 0
-                        
-                        # Add pre-speech buffer to speech data
-                        self.speech_data = list(self.pre_speech_buffer)
-                        
-                        logging.debug(f"Speech started after {self.consecutive_above_threshold} consecutive blocks "
-                                    f"(RMS: {rms:.2f}, includes {len(self.pre_speech_buffer)} pre-buffer blocks)")
-                        
-                        # Add buffered blocks to callback buffer
-                        if self.on_audio_block:
-                            self.callback_buffer = list(self.speech_data)
-                            self._check_callback_buffer()
-                else:
-                    # Reset consecutive counter if below threshold
-                    self.consecutive_above_threshold = 0
-                    
-            else:
-                # Speech is active, accumulate data
-                self.speech_data.append(audio_block)
-                self.speech_blocks_count += 1
-                
-                # Add to callback buffer
-                if self.on_audio_block:
-                    self.callback_buffer.append(audio_block)
-                    self._check_callback_buffer()
-                
-                if rms > self.energy_threshold:
-                    # Reset silent counter if we hear speech
-                    self.silent_blocks_count = 0
-                else:
-                    # Count silent blocks
-                    self.silent_blocks_count += 1
-                    
-                    if self.silent_blocks_count >= self.post_speech_blocks:
-                        # Speech has ended
-                        self.is_speech_active = False
-                        
-                        # Send any remaining buffered audio
-                        if self.on_audio_block and self.callback_buffer:
-                            audio_to_send = np.concatenate(self.callback_buffer)
-                            self.on_audio_block(audio_to_send)
-                            self.callback_buffer = []
-                        
-                        # Only process as valid speech if it was long enough
-                        if self.speech_blocks_count >= self.min_speech_blocks:
-                            # Log that speech segment ended
-                            duration = len(self.speech_data) * self.blocksize / self._sample_rate
-                            logging.debug(f"Speech ended (duration: {duration:.2f}s, {self.speech_blocks_count} blocks)")
-                        else:
-                            logging.debug(f"Ignored short sound burst ({self.speech_blocks_count} blocks)")
-                        
-                        # Reset for next speech segment
-                        self.speech_data = []
-                        self.speech_blocks_count = 0
-                        self.silent_blocks_count = 0
-                        self.consecutive_above_threshold = 0
-    
-    def _check_callback_buffer(self):
-        """Check if callback buffer has enough data to send."""
-        if len(self.callback_buffer) >= self.callback_buffer_blocks:
-            # Send accumulated audio
-            audio_to_send = np.concatenate(self.callback_buffer[:self.callback_buffer_blocks])
-            self.on_audio_block(audio_to_send)
-            # Keep any remaining blocks for next callback
-            self.callback_buffer = self.callback_buffer[self.callback_buffer_blocks:]
-    
+
+        audio_level = self._iqr_rms(indata)
+        self._capture_blocks.append(indata.copy())
+
+        if audio_level >= self._activity_threshold:
+            self._silent_blocks_count = 0
+            self._active_blocks_count += 1
+            if self._active_blocks_count == ACTIVATION_BLOCKS:
+                logging.info("Detected start of speech")
+        else:
+            self._silent_blocks_count += 1
+            if self._silent_blocks_count >= DEACTIVATION_BLOCKS:
+                if self._active_blocks_count >= ACTIVATION_BLOCKS:
+                    logging.info("Detected end of speech")
+                    self._flush_blocks_to_callback_thread()
+                self._active_blocks_count = 0
+
+        if self._active_blocks_count >= ACTIVATION_BLOCKS:
+            if len(self._capture_blocks) > CALLBACK_BLOCKS:
+                self._flush_blocks_to_callback_thread()
+        else:
+            # Discard old blocks
+            while len(self._capture_blocks) > LEAD_BLOCKS + ACTIVATION_BLOCKS:
+                self._capture_blocks.popleft()
+
     def start(self):
         """Start audio capture and voice activity detection."""
         if self._stream is not None:
             logging.warning("Audio capture already started")
             return
-        
-        # First measure ambient noise
-        self.measure_ambient_noise()
-        
-        if self._stop_event.is_set():
-            return
-        
-        logging.info("Starting audio capture with voice activity detection")
-        
+
+        self._stop_event.clear()
+        self._measure_ambient_noise()
+
         # Create and start the audio stream
         self._stream = sd.InputStream(
-            samplerate=self._sample_rate,
-            channels=self.channels,
-            dtype=self.dtype,
-            blocksize=self.blocksize,
+            samplerate=SAMPLE_RATE,
+            channels=CHANNELS,
+            dtype=DTYPE,
+            blocksize=BLOCK_SIZE,
             callback=self._audio_callback,
-            device=self.device
+            device=self._device,
         )
         self._stream.start()
-    
+
     def stop(self):
         """Stop audio capture."""
         logging.info("Stopping audio capture")
         self._stop_event.set()
-        
+
         if self._stream is not None:
             self._stream.stop()
             self._stream.close()
             self._stream = None
-        
+
         # Clear buffers
-        with self.lock:
-            self.pre_speech_buffer.clear()
-            self.speech_data = []
-            self.callback_buffer = []
-            self.is_speech_active = False
-            self.silent_blocks_count = 0
-            self.speech_blocks_count = 0
-            self.consecutive_above_threshold = 0
-    
-    def __enter__(self):
-        """Context manager entry."""
-        self.start()
-        return self
-    
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit."""
-        self.stop() 
+        self._callback_blocks.put(None)  # Poison pill
+        self._callback_thread.join()

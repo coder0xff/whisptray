@@ -1,33 +1,19 @@
-import speech_recognition
+"""Test program for SpeechToKeys."""
+
 import logging
 import sys
 import platform
 import termios
 import tty
 from whisptray.speech_to_keys import SpeechToKeys
-from whisptray.__main__ import open_microphone, DEFAULT_MODEL_NAME, DEFAULT_ENERGY_THRESHOLD, DEFAULT_RECORD_TIMEOUT, DEFAULT_PHRASE_TIMEOUT
 
-# Configure logging for testing
 logging.basicConfig(level=logging.DEBUG)
 
 def main():
     """
-    Test program for SpeechToKeys.
     Creates a SpeechToKeys object, turns it on, waits for 10 chars from stdin, and exits.
     """
-    mic_name = "default"  # Or use a specific microphone name
-    source = open_microphone(mic_name)
-    if source is None:
-        logging.error(f"Microphone '{mic_name}' not found. Exiting.")
-        return
-
-    speech_to_keys = SpeechToKeys(
-        model_name=DEFAULT_MODEL_NAME,
-        energy_threshold=DEFAULT_ENERGY_THRESHOLD,
-        record_timeout=DEFAULT_RECORD_TIMEOUT,
-        phrase_timeout=DEFAULT_PHRASE_TIMEOUT,
-        source=source,
-    )
+    speech_to_keys = SpeechToKeys()
 
     print("Turning on dictation. Speak into the microphone.")
     print("The script will auto-exit after you type 10 characters into this terminal.")

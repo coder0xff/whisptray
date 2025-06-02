@@ -1,15 +1,15 @@
 """whisptray using your microphone to produce keyboard input."""
 
 import argparse
+import importlib.metadata
 import logging
 import os
 import subprocess
 import threading
 import time
 from sys import platform
-import importlib.metadata
+from typing import Optional
 
-import speech_recognition
 from PIL import Image, ImageDraw
 
 from .alsa_error_handler import setup_alsa_error_handler, teardown_alsa_error_handler
@@ -25,7 +25,7 @@ except ImportError:
     TKINTER_AVAILABLE = False
 
 # Don't use AppIndicator on Linux, because it doesn't support direct icon clicks.
-if "linux" in platform:
+if "linux" in platform and "PYSTRAY_BACKEND" not in os.environ:
     os.environ["PYSTRAY_BACKEND"] = "xorg"
 
 # pylint: disable=wrong-import-position,wrong-import-order
@@ -40,17 +40,13 @@ except ImportError:
     TKINTER_AVAILABLE = False
 
 # --- Configuration ---
+DEFAULT_DEVICE = None  # Sounddevice will use default device
 DEFAULT_MODEL_NAME = "turbo"
-DEFAULT_ENERGY_THRESHOLD = 1000
-DEFAULT_RECORD_TIMEOUT = 0.5  # Seconds for real-time recording
-DEFAULT_PHRASE_TIMEOUT = 5.0  # Seconds of silence before a new phrase is started
-DEFAULT_MICROPHONE = "default"  # For Linux
+DEFAULT_AMBIENT_DURATION = 1.0  # Default for ambient_duration
+DEFAULT_ENERGY_MULTIPLIER = 1.5  # Default for energy_threshold_multiplier
 
 
-def configure_logging(verbose: bool):
-    """
-    Configures logging based on the verbose flag.
-    """
+def _configure_logging(verbose: bool):
     if verbose:
         logging.basicConfig(
             level=logging.DEBUG,
@@ -69,26 +65,20 @@ def configure_logging(verbose: bool):
             datefmt="%Y-%m-%d %H:%M:%S",
         )
 
-    # Setup ALSA error handler (if on Linux)
-    # This should be done early, before any library might initialize ALSA.
     if "linux" in platform:
+        logging.info("Setting up ALSA error handler.")
         setup_alsa_error_handler()
-    else:
-        logging.info("Skipping ALSA error handler setup on non-Linux platform.")
 
 
-def parse_args():
-    """
-    Parses the command line arguments.
-    """
+def _parse_args():
     parser = argparse.ArgumentParser(
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     parser.add_argument(
-        "--mic",
-        default=DEFAULT_MICROPHONE,
-        help="Default microphone name for SpeechRecognition. "
-        "Run this with 'list' to view available Microphones.",
+        "--device",
+        default=DEFAULT_DEVICE,
+        help="Microphone name or ID for sounddevice. "
+        "Run with 'list' to view available Microphones.",
         type=str,
     )
     parser.add_argument(
@@ -98,25 +88,15 @@ def parse_args():
         choices=["tiny", "base", "small", "medium", "large", "turbo"],
     )
     parser.add_argument(
-        "--non_english", action="store_true", help="Don't use the english model."
-    )
-    parser.add_argument(
-        "--energy_threshold",
-        default=DEFAULT_ENERGY_THRESHOLD,
-        help="Energy level for mic to detect.",
-        type=int,
-    )
-    parser.add_argument(
-        "--record_timeout",
-        default=DEFAULT_RECORD_TIMEOUT,
-        help="How real time the recording is in seconds.",
+        "--ambient_duration",
+        default=DEFAULT_AMBIENT_DURATION,
+        help="Duration of time to measure ambient noise for energy threshold.",
         type=float,
     )
     parser.add_argument(
-        "--phrase_timeout",
-        default=DEFAULT_PHRASE_TIMEOUT,
-        help="How much empty space between recordings before we "
-        "consider it a new line in the transcription.",
+        "--energy_multiplier",
+        default=DEFAULT_ENERGY_MULTIPLIER,
+        help="Multiplier to ambient noise for energy threshold of speech detection.",
         type=float,
     )
     parser.add_argument(
@@ -131,51 +111,8 @@ def parse_args():
         version=f"%(prog)s {importlib.metadata.version('whisptray')}",
         help="Show program's version number and exit.",
     )
-    if "linux" in platform:
-        parser.add_argument(
-            "--default_microphone",
-            default=DEFAULT_MICROPHONE,
-            help="Default microphone name for SpeechRecognition. "
-            "Run this with 'list' to view available Microphones.",
-            type=str,
-        )
     args = parser.parse_args()
     return args
-
-
-def open_microphone(mic_name: str) -> speech_recognition.Microphone:
-    """
-    Opens a microphone based on the microphone name.
-    """
-    assert mic_name
-
-    result = None
-    if "linux" in platform:
-        for index, name in enumerate(
-            speech_recognition.Microphone.list_microphone_names()
-        ):
-            if mic_name in name:
-                result = speech_recognition.Microphone(
-                    sample_rate=16000, device_index=index
-                )
-                logging.info("Using microphone: %s", name)
-                break
-        if result is None:
-            logging.error(
-                "Microphone containing '%s' not found. Please check available"
-                " microphones.",
-                mic_name,
-            )
-            logging.info("Available microphone devices are: ")
-            for index, name_available in enumerate(
-                speech_recognition.Microphone.list_microphone_names()
-            ):
-                logging.info('Microphone with name "%s" found', name_available)
-    else:
-        result = speech_recognition.Microphone(sample_rate=16000)
-        logging.info("Using default microphone.")
-
-    return result
 
 
 class WhisptrayGui:
@@ -183,43 +120,44 @@ class WhisptrayGui:
     Class to run the whisptray App.
     """
 
-    # pylint: disable=too-many-arguments,too-many-positional-arguments
     def __init__(
-        self, mic_name, model_name, energy_threshold, record_timeout, phrase_timeout
+        self,
+        device: Optional[str | int],
+        model_name: str,
+        ambient_duration: float,
+        energy_multiplier: float,  # Changed from energy_threshold
     ):
         self.last_click_time = 0.0
         self.click_timer = None
         # Default in seconds, updated by system settings
-        self.effective_double_click_interval = 0.5
+        self.effective_double_click_interval = (
+            WhisptrayGui._get_system_double_click_time()
+        )
         self.app_is_exiting = threading.Event()
         self.app_icon = None  # Initialize to None
 
-        source = open_microphone(mic_name)
-        if source is None:
-            raise ValueError("No microphone found")
+        try:
+            device = int(device)  # type: ignore
+        except (TypeError, ValueError):
+            pass
 
         self.speech_to_keys = SpeechToKeys(
-            model_name, energy_threshold, record_timeout, phrase_timeout, source
+            model_name=model_name,
+            device=device,
+            ambient_duration=ambient_duration,
+            activity_ambient_multiplier=energy_multiplier,
         )
-        self._initialize_double_click_interval()
-        # Start tray icon
+
         logging.info("Starting tray icon...")
         self._setup_tray_icon()  # This will set self.app_icon
 
-        # Start icon health check thread
-        if self.app_icon:
-            self.health_check_thread = threading.Thread(
-                target=self._icon_health_check,
-                daemon=True,
-                name="IconHealthCheckThread",
-            )
-            self.health_check_thread.start()
-            logging.info("Icon health check thread started.")
-        else:
-            logging.error(
-                "App icon not initialized properly. Health check thread not started. "
-                "The application might not function correctly."
-            )
+        self.health_check_thread = threading.Thread(
+            target=self._icon_health_check,
+            daemon=True,
+            name="IconHealthCheckThread",
+        )
+        self.health_check_thread.start()
+        logging.info("Icon health check thread started.")
 
     def run(self):
         """
@@ -231,9 +169,6 @@ class WhisptrayGui:
 
     def toggle_dictation(self):
         """Toggles dictation on/off."""
-        logging.info(
-            "toggle_dictation called. Current state: %s", self.speech_to_keys.enabled
-        )
         self.speech_to_keys.enabled = not self.speech_to_keys.enabled
         if self.speech_to_keys.enabled:
             logging.info("Dictation started by toggle.")
@@ -260,10 +195,11 @@ class WhisptrayGui:
         self.speech_to_keys.shutdown()
 
         if "linux" in platform:
+            logging.info("Tearing down ALSA error handler.")
             teardown_alsa_error_handler()
 
         if self.app_icon:
-            logging.info("Disabling tray icon.")
+            logging.info("Shutting down tray icon.")
             self.app_icon.stop()
 
     def _setup_tray_icon(self):
@@ -377,24 +313,7 @@ class WhisptrayGui:
             OSError,
         ) as e:
             logging.warning("Could not query system double-click time: %s", e)
-        return None
-
-    def _initialize_double_click_interval(self):
-        """Initializes the double-click interval, falling back to default if needed."""
-        system_interval = WhisptrayGui._get_system_double_click_time()
-        if (
-            system_interval is not None and 0.1 <= system_interval <= 2.0
-        ):  # Sanity check interval
-            self.effective_double_click_interval = system_interval
-            logging.info(
-                "Using system double-click interval: %.2fs",
-                self.effective_double_click_interval,
-            )
-        else:
-            logging.info(
-                "Using default double-click interval: %.2fs",
-                self.effective_double_click_interval,
-            )
+        return 0.5
 
     @staticmethod
     def _create_tray_image(shape_type):
@@ -402,41 +321,31 @@ class WhisptrayGui:
         background."""
         image = Image.new("RGB", (128, 128), (0, 0, 0))
         dc = ImageDraw.Draw(image)
-        padding = int(128 * 0.2)  # Add padding around the shape
 
         if shape_type == "record":
-            # Draw a circle
-            dc.ellipse((padding, padding, 128 - padding, 128 - padding), fill="red")
+            dc.ellipse((0, 0, 128, 128), fill="red")
         else:  # shape_type == "stop"
-            # Draw a square
-            dc.rectangle((padding, padding, 128 - padding, 128 - padding), fill="white")
+            dc.rectangle((0, 0, 128, 128), fill="white")
         return image
 
     def _show_exit_dialog_actual(self):
         """Shows an exit confirmation dialog or exits directly."""
         logging.info("show_exit_dialog_actual called.")
 
-        proceed_to_exit = False
+        proceed_to_exit = True
         if TKINTER_AVAILABLE:
-            try:
-                # Ensure tkinter root window doesn't appear if not already running
-                root = tkinter.Tk()
-                root.withdraw()  # Hide the main window
-                proceed_to_exit = tkinter.messagebox.askyesno(
-                    title="Exit whisptray App?",
-                    message="Are you sure you want to exit whisptray App?",
-                )
-                root.destroy()  # Clean up the hidden root window
-            except (tkinter.TclError, RuntimeError) as e:
-                logging.warning(
-                    "Could not display tkinter exit dialog: %s. Exiting directly.", e
-                )
-                proceed_to_exit = True  # Fallback to exit if dialog fails
+            # Ensure tkinter root window doesn't appear if not already running
+            root = tkinter.Tk()
+            root.withdraw()  # Hide the main window
+            proceed_to_exit = tkinter.messagebox.askyesno(
+                title="Exit whisptray App?",
+                message="Are you sure you want to exit whisptray App?",
+            )
+            root.destroy()  # Clean up the hidden root window
         else:
             logging.info(
                 "tkinter not available, exiting directly without confirmation."
             )
-            proceed_to_exit = True
 
         if proceed_to_exit:
             self.exit_program()  # app_icon might be None if called early
@@ -480,30 +389,14 @@ class WhisptrayGui:
                 "Started click timer for %ss", self.effective_double_click_interval
             )
 
-    def _handle_thread_exception(self, args):
-        """Handles exceptions in threads."""
-        thread_name = threading.current_thread().name
-        logging.error(
-            "Exception in thread '%s': %s. Initiating application exit.",
-            thread_name,
-            args[1],
-            exc_info=True,
-        )
-        self.exit_program()
-
     def _icon_health_check(self):
         """Periodically checks the health of the pystray icon and exits on failure."""
-        if not self.app_icon:
-            logging.warning(
-                "Icon health check: app_icon is None at start. Thread exiting."
-            )
-            return
+        assert self.app_icon is not None, "app_icon failed"
 
         logging.info("Icon health check loop starting.")
         while not self.app_is_exiting.is_set():
             # The act of getting and setting the icon can help issues with pystray
-            current_icon_image = self.app_icon.icon
-            self.app_icon.icon = current_icon_image
+            self.app_icon.icon = self.app_icon.icon
 
             time.sleep(1)
 
@@ -514,38 +407,31 @@ def main():
     """
     Main function to run the whisptray App.
     """
-    args = parse_args()
-    configure_logging(args.verbose)
-
-    if args.mic == "list":
-        print(
-            "Available microphones: ",
-            ", ".join(speech_recognition.Microphone.list_microphone_names()),
-        )
-        return
-
-    model_name = args.model
-    if not args.non_english and model_name not in ["large", "turbo"]:
-        model_name += ".en"
-
-    gui = WhisptrayGui(
-        args.mic,
-        model_name,
-        args.energy_threshold,
-        args.record_timeout,
-        args.phrase_timeout,
-    )
-    # This will block until exit
-    gui.run()
-
-
-if __name__ == "__main__":
-    # It's good practice to ensure DISPLAY is set for GUI apps on Linux
     if "linux" in platform and not os.environ.get("DISPLAY"):
         print("Error: DISPLAY environment variable not set. GUI cannot be displayed.")
         print("Please ensure you are running this in a graphical environment.")
-        # Logging might not be configured yet if verbose flag isn't parsed.
-        # So, print directly.
-        # If main() were to proceed, logging would be set up, but we exit here.
-    else:
-        main()
+        return 1
+
+    args = _parse_args()
+    _configure_logging(args.verbose)
+
+    if isinstance(args.device, str) and args.device.lower() == "list":
+        SpeechToKeys.query_devices()
+        return 0
+
+    model_name = args.model
+    if not args.model.endswith(".en") and args.model not in ["large", "turbo"]:
+        model_name += ".en"
+
+    gui = WhisptrayGui(
+        args.device,
+        model_name,
+        args.ambient_duration,
+        args.energy_multiplier,
+    )
+    gui.run()
+    return 0
+
+
+if __name__ == "__main__":
+    main()

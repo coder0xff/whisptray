@@ -1,19 +1,21 @@
 """Contains the SpeechToKeys class."""
 
 import logging
-import threading
 from datetime import datetime, timedelta, timezone
 from queue import Empty, Queue
+from threading import Thread
 from time import sleep
+from typing import Optional
 
 import numpy as np
-import speech_recognition
 import torch
 import whisper
 from pynput.keyboard import Controller as KeyboardController
 from pynput.keyboard import Key
 from pynput.keyboard import Listener as KeyboardListener
 from pynput.mouse import Listener as MouseListener
+
+from .audio_capture import AudioCapture
 
 
 # pylint: disable=too-many-instance-attributes
@@ -25,19 +27,15 @@ class SpeechToKeys:
     # pylint: disable=too-many-arguments,too-many-positional-arguments
     def __init__(
         self,
-        model_name: str,
-        energy_threshold: int,
-        record_timeout: float,
-        phrase_timeout: float,
-        source: speech_recognition.Microphone,
+        model_name: str = "turbo",
+        device: Optional[str | int] = None,
+        ambient_duration: float = 1.0,
+        activity_ambient_multiplier: float = 1.5,
+        phrase_timeout: float = 3.0,
     ):
-        self.model_name = model_name
-        self.energy_threshold = energy_threshold
-        self.record_timeout = record_timeout
         self.phrase_timeout = timedelta(seconds=phrase_timeout)
-        self.source = source
-        self.data_queue = Queue[bytes]()
-        self.phrase_bytes = b""
+        self.data_queue = Queue[np.ndarray]()
+        self.float_samples: np.ndarray = np.array([], dtype=np.float32)
         self.phrase_time = None
         self.buffer = ""
         self.is_first_phrase = True
@@ -45,31 +43,31 @@ class SpeechToKeys:
         self.keyboard = KeyboardController()
         self._keyboard_listener = None
         self._mouse_listener = None
-        self._is_programmatic_typing = False  # Flag to indicate programmatic typing
-        self._stop_listening_callback = None  # For the background audio listener
+        self._is_programmatic_typing = False
+
+        self.audio_capture = AudioCapture(
+            on_audio=self._on_audio,
+            device=device,
+            ambient_duration=ambient_duration,
+            activity_ambient_multiplier=activity_ambient_multiplier,
+        )
 
         logging.info("Loading Whisper model: %s", model_name)
+        self.audio_model = whisper.load_model(model_name)
+        logging.info("Whisper model loaded successfully.")
 
-        try:
-            self.audio_model = whisper.load_model(model_name)
-            logging.info("Whisper model loaded successfully.")
-        except (OSError, RuntimeError, ValueError) as e:
-            logging.error("Error loading Whisper model: %s", e, exc_info=True)
-            # Consider re-raising or setting a flag that initialization failed
-            return
-
-        self.recorder = speech_recognition.Recognizer()
-        self.recorder.energy_threshold = energy_threshold
-        # Don't let it change, because eventually it will whisptray noise.
-        self.recorder.dynamic_energy_threshold = False
-
-        # Background listener will be started when dictation is enabled.
-        # Start audio processing thread
-        audio_thread = threading.Thread(
-            target=self._process_audio, daemon=True, name="AudioProcessThread"
+        audio_thread = Thread(
+            target=self._process_audio, daemon=True, name="AudioThread"
         )
         audio_thread.start()
         logging.info("Audio processing thread started.")
+
+    @staticmethod
+    def query_devices():
+        """
+        Lists the available input audio devices using sounddevice.
+        """
+        print(AudioCapture.query_devices())
 
     def shutdown(self):
         """
@@ -77,7 +75,6 @@ class SpeechToKeys:
         """
         self.enabled = False
 
-        # Ensure data_queue is emptied
         while not self.data_queue.empty():
             try:
                 self.data_queue.get_nowait()
@@ -85,43 +82,25 @@ class SpeechToKeys:
                 break
         logging.info("SpeechToKeys shutdown complete.")
 
-    def _adjust_ambient_noise(self):
-        """Adjusts the recorder for ambient noise."""
-        with self.source:
-            try:
-                self.recorder.adjust_for_ambient_noise(self.source, duration=1)
-                logging.info("Adjusted for ambient noise.")
-            except (
-                speech_recognition.WaitTimeoutError,
-                OSError,
-                ValueError,
-                AttributeError,
-            ) as e:
-                logging.warning(
-                    "Could not adjust for ambient noise: %s", e, exc_info=True
-                )
-                # Continue without adjustment if it fails
-
     def _reset(self):
-        self.phrase_bytes = b""
+        self.float_samples = np.array([], dtype=np.float32)
         self.phrase_time = None
         self.buffer = ""
         self.is_first_phrase = True
-        while not self.data_queue.empty():  # Clear the queue
+        while not self.data_queue.empty():
             try:
                 self.data_queue.get_nowait()
             except Empty:
                 break
 
-    def _record_callback(self, _, audio: speech_recognition.AudioData) -> None:
+    def _on_audio(self, audio: np.ndarray) -> None:
         """
         Threaded callback function to receive audio data when recordings finish.
         audio: An AudioData containing the recorded bytes.
         """
         if self.dictation_active:
             logging.debug("Recording callback received and dictation is active.")
-            data = audio.get_raw_data()
-            self.data_queue.put(data)
+            self.data_queue.put(audio)
         else:
             logging.warning("Recording callback received but dictation is not active.")
 
@@ -131,16 +110,11 @@ class SpeechToKeys:
             return  # Ignore key presses generated by the program itself
 
         # We don't need to know which key, just that a press occurred.
-        # This helps avoid issues if the key is None or special.
         logging.debug("User key press detected. %s", key)
         self._reset()
 
-    def _on_click(self, x, y, button, pressed):
+    def _on_click(self, x, y, button, _pressed):
         """Callback for mouse listener."""
-        # We only care about button presses, not releases
-        if not pressed:
-            return
-
         # We don't need to know which button, just that a click occurred.
         logging.debug("User mouse click detected. x=%s, y=%s, button=%s", x, y, button)
         self._reset()
@@ -185,59 +159,50 @@ class SpeechToKeys:
         """Processes audio from the queue and performs transcription."""
         while True:
             if not self.dictation_active:
-                logging.debug("Process audio running but dictation is not active.")
+                logging.debug("_process_audio running but dictation is not active.")
                 sleep(0.1)
                 continue
 
             now = datetime.now(timezone.utc)
             if not self.data_queue.empty():
                 logging.debug("Processing audio from queue.")
-                phrase_complete = False
+                previous_phrase_done = False
                 if (
                     self.phrase_time is not None
                     and now - self.phrase_time > self.phrase_timeout
                 ):
-                    self.phrase_bytes = b""
-                    phrase_complete = True
+                    self.float_samples = np.array([], dtype=np.float32)
+                    previous_phrase_done = True
+                    logging.info("The previous phrase ended")
                 self.phrase_time = now
 
-                temp_audio_list = []
+                temp = []
                 while not self.data_queue.empty():
                     try:
-                        temp_audio_list.append(self.data_queue.get_nowait())
+                        temp.append(self.data_queue.get_nowait())
                     except Empty:
                         break
 
-                audio_data = b"".join(temp_audio_list)
-                self.phrase_bytes += audio_data
+                new_samples = np.concatenate(temp).astype(np.float32) / 32768.0
+                new_samples = new_samples.flatten()
+                self.float_samples = np.concatenate((self.float_samples, new_samples))
 
-                if not self.phrase_bytes:
-                    sleep(0.1)
-                    continue
-
-                audio_np = (
-                    np.frombuffer(self.phrase_bytes, dtype=np.int16).astype(np.float32)
-                    / 32768.0
-                )
-
-                if self.audio_model:
-                    self._transcribe(phrase_complete, audio_np)
-                else:
-                    logging.warning("Audio model not loaded, cannot transcribe.")
+                self._transcribe(previous_phrase_done, self.float_samples)
             else:
                 sleep(0.1)
 
-    def _transcribe(self, previous_phrase_done, audio_samples):
+    def _transcribe(self, previous_phrase_done, audio_data):
         logging.debug("Transcribing audio.")
         try:
             result = self.audio_model.transcribe(
-                audio_samples, fp16=torch.cuda.is_available()
+                audio_data, fp16=torch.cuda.is_available()
             )
             text = result["text"]
             if self.is_first_phrase:
-                text = text.lstrip()  # There was no previous phrase, so remove any
-                # leading whitespace that the transcription might have added.
-            logging.info("Transcribed text: '%s'", text)  # Can be very verbose
+                # There was no previous phrase, so remove any leading whitespace that
+                # the transcription might have added.
+                text = text.lstrip()
+            logging.info("Transcribed text: '%s'", text)
 
             if text:
                 self._is_programmatic_typing = True
@@ -299,22 +264,14 @@ class SpeechToKeys:
         )
 
         if value:
-            assert (
-                self._stop_listening_callback is None
-            ), "Stop listening callback should be None"
             self._start_keyboard_listener()
             self._start_mouse_listener()
-            self._adjust_ambient_noise()
 
             self._reset()
             self.dictation_active = True
 
             try:
-                self._stop_listening_callback = self.recorder.listen_in_background(
-                    self.source,
-                    self._record_callback,
-                    phrase_time_limit=self.record_timeout,
-                )
+                self.audio_capture.start()
                 logging.info("Background audio listener started.")
             except (OSError, AttributeError, RuntimeError) as e:
                 logging.error(
@@ -328,12 +285,6 @@ class SpeechToKeys:
             self.dictation_active = False  # Set this first
             self._stop_keyboard_listener()  # Stop keyboard listener
             self._stop_mouse_listener()  # Stop mouse listener
-
-            assert (
-                self._stop_listening_callback is not None
-            ), "Stop listening callback should not be None"
-            logging.info("Stopping background audio listener.")
-            self._stop_listening_callback(wait_for_stop=True)
-            self._stop_listening_callback = None
+            self.audio_capture.stop()
 
             self._reset()

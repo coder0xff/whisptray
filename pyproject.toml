@@ -23,10 +23,9 @@ dependencies = [
     "numpy",
     "openai-whisper",
     "Pillow",
-    "PyAudio",
+    "sounddevice",
     "pynput",
     "pystray",
-    "SpeechRecognition",
     "torch",
 ]
 
@@ -60,7 +59,8 @@ warn_unused_ignores = true
 module = [
     "pystray",
     "speech_recognition",
-    "whisper"
+    "whisper",
+    "sounddevice",
 ]
 ignore_missing_imports = true
 
