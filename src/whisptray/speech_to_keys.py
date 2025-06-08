@@ -1,21 +1,21 @@
 """Contains the SpeechToKeys class."""
 
 import logging
-from datetime import datetime, timedelta, timezone
 from queue import Empty, Queue
 from threading import Thread
 from time import sleep
-from typing import Optional
+from typing import Optional, Tuple
 
 import numpy as np
 import torch
 import whisper
-from pynput.keyboard import Controller as KeyboardController
 from pynput.keyboard import Key
 from pynput.keyboard import Listener as KeyboardListener
 from pynput.mouse import Listener as MouseListener
 
 from .audio_capture import AudioCapture
+from .essential_thread import essential_thread
+from .rate_limited_keyboard import Controller as KeyboardController
 
 
 # pylint: disable=too-many-instance-attributes
@@ -34,18 +34,18 @@ class SpeechToKeys:
         activity_ambient_multiplier: float = 1.5,
         phrase_timeout: float = 3.0,
     ):
-        self._key_event_sleep_time = 1.0 / max_key_rate
-        self._phrase_timeout = timedelta(seconds=phrase_timeout)
-        self._data_queue = Queue[np.ndarray]()
+        self._phrase_timeout = phrase_timeout
+        self._data_queue = Queue[Tuple[float, float, np.ndarray]]()
         self._float_samples: np.ndarray = np.array([], dtype=np.float32)
-        self._last_deque_time = None
+        self._last_block_end_time = None
         self._buffer = ""
         self._is_first_phrase = True
         self._dictation_active = False
-        self._keyboard = KeyboardController()
+        self._keyboard = KeyboardController(1.0 / max_key_rate)
         self._keyboard_listener = None
         self._mouse_listener = None
         self._is_programmatic_typing = False
+        self._exit = False
 
         self._audio_capture = AudioCapture(
             on_audio=self._on_audio,
@@ -59,10 +59,10 @@ class SpeechToKeys:
         logging.info("Whisper model loaded successfully.")
 
         audio_thread = Thread(
-            target=self._process_audio, daemon=True, name="AudioThread"
+            target=self._loop, daemon=True, name="TranscriptionThread"
         )
         audio_thread.start()
-        logging.info("Audio processing thread started.")
+        logging.info("Processing thread started.")
 
     @staticmethod
     def query_devices():
@@ -77,7 +77,8 @@ class SpeechToKeys:
         """
         self.enabled = False
         self._audio_capture.shutdown()
-        
+        self._exit = True
+
         while not self._data_queue.empty():
             try:
                 self._data_queue.get_nowait()
@@ -87,7 +88,7 @@ class SpeechToKeys:
 
     def _reset(self):
         self._float_samples = np.array([], dtype=np.float32)
-        self._last_deque_time = None
+        self._last_block_end_time = None
         self._buffer = ""
         self._is_first_phrase = True
         while not self._data_queue.empty():
@@ -96,14 +97,14 @@ class SpeechToKeys:
             except Empty:
                 break
 
-    def _on_audio(self, audio: np.ndarray) -> None:
+    def _on_audio(self, block_start_time: float, block_end_time: float, audio: np.ndarray) -> None:
         """
         Threaded callback function to receive audio data when recordings finish.
         audio: An AudioData containing the recorded bytes.
         """
         if self._dictation_active:
             logging.debug("Recording callback received and dictation is active.")
-            self._data_queue.put(audio)
+            self._data_queue.put((block_start_time, block_end_time, audio))
         else:
             logging.warning("Recording callback received but dictation is not active.")
 
@@ -158,47 +159,57 @@ class SpeechToKeys:
         else:
             logging.info("Mouse listener not running or already stopped.")
 
-    def _process_audio(self):
+    def _process_blocks(self, blocks: list[np.ndarray], phrase_break: bool):
+        if blocks:
+            new_samples = np.concatenate(blocks).astype(np.float32) / 32768.0
+            new_samples = new_samples.flatten()
+            self._float_samples = np.concatenate((self._float_samples, new_samples))
+            self._transcribe(phrase_break)
+            if phrase_break:
+                self._float_samples = np.array([], dtype=np.float32)
+
+    def _loop(self):
         """Processes audio from the queue and performs transcription."""
-        while True:
-            if not self._dictation_active:
-                logging.debug("_process_audio running but dictation is not active.")
-                sleep(0.1)
-                continue
+        with essential_thread():
+            while not self._exit:
+                if not self._dictation_active:
+                    sleep(0.1)
+                    continue
 
-            now = datetime.now(timezone.utc)
-            if not self._data_queue.empty():
-                logging.debug("Processing audio from queue.")
-                previous_phrase_done = False
-                if (
-                    self._last_deque_time is not None
-                    and now - self._last_deque_time > self._phrase_timeout
-                ):
-                    self._float_samples = np.array([], dtype=np.float32)
-                    previous_phrase_done = True
-                    logging.info("The previous phrase ended")
+                new_blocks = []
 
-                self._last_deque_time = now
-                temp = []
                 while not self._data_queue.empty():
                     try:
-                        temp.append(self._data_queue.get_nowait())
+                        block_start_time, block_end_time, audio = self._data_queue.get_nowait()
                     except Empty:
                         break
 
-                new_samples = np.concatenate(temp).astype(np.float32) / 32768.0
-                new_samples = new_samples.flatten()
-                self._float_samples = np.concatenate((self._float_samples, new_samples))
+                    if self._last_block_end_time is not None and block_start_time > self._last_block_end_time + self._phrase_timeout:
+                        self._process_blocks(new_blocks, True)
 
-                self._transcribe(previous_phrase_done, self._float_samples)
-            else:
+                    self._last_block_end_time = block_end_time
+                    new_blocks.append(audio)
+
+                self._process_blocks(new_blocks, False)
                 sleep(0.1)
 
-    def _transcribe(self, previous_phrase_done, audio_data):
-        logging.debug("Transcribing audio.")
+    def _transcribe(self, phrase_break: bool):
         try:
+            self._is_programmatic_typing = True
+            if phrase_break:
+                # Sometimes the transciption misses ending punctuation if it had
+                # thought more words would come, but did not.
+                if self._buffer and self._buffer.rstrip()[-1] not in [".", "!", "?"]:
+                    self._keyboard.type(".")
+                self._buffer = ""
+                self._is_first_phrase = False
+
+            if self._float_samples.size == 0:
+                return
+            
+            logging.debug("Transcribing audio.")
             result = self._audio_model.transcribe(
-                audio_data, fp16=torch.cuda.is_available()
+                self._float_samples, fp16=torch.cuda.is_available()
             )
             text = result["text"]
             if self._is_first_phrase:
@@ -207,43 +218,25 @@ class SpeechToKeys:
                 text = text.lstrip()
             logging.info("Transcribed text: '%s'", text)
 
-            if text:
-                self._is_programmatic_typing = True
-                if previous_phrase_done:
-                    # Sometimes the transciption misses ending punctuation if it had
-                    # thought more words would come, but did not.
-                    if self._buffer and self._buffer.rstrip()[-1] not in [".", "!", "?"]:
-                        self._keyboard.type(".")
-                        sleep(self._key_event_sleep_time)
-                    for char in text:
-                        self._keyboard.type(char)
-                        sleep(self._key_event_sleep_time)
-                    self._is_first_phrase = False
-                    self._buffer = ""
-                    self._float_samples = np.array([], dtype=np.float32)
-                else:
-                    if self._buffer:
-                        # find the first index where the text and buffer differ
-                        index = next(
-                            (
-                                i
-                                for i, (t, b) in enumerate(zip(text, self._buffer))
-                                if t != b
-                            ),
-                            len(self._buffer),
-                        )
-                        for _ in range(index, len(self._buffer)):
-                            self._keyboard.press(Key.backspace)
-                            # Web pages sometimes struggle with fast keystrokes.
-                            sleep(self._key_event_sleep_time)
-                            self._keyboard.release(Key.backspace)
-                            sleep(self._key_event_sleep_time)
-                    else:
-                        index = 0
-
-                    for i in range(index, len(text)):
-                        self._keyboard.type(text[i])
-                    self._buffer = text
+            if self._buffer:
+                # find the first index where the text and buffer differ
+                index = next(
+                    (
+                        i
+                        for i, (t, b) in enumerate(zip(text, self._buffer))
+                        if t != b
+                    ),
+                    len(self._buffer),
+                )
+                
+                for _ in range(index, len(self._buffer)):
+                    self._keyboard.tap(Key.backspace)
+            else:
+                index = 0
+                
+            for i in range(index, len(text)):
+                self._keyboard.type(text[i])
+            self._buffer = text
         finally:
             self._is_programmatic_typing = False
 

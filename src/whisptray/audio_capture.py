@@ -2,13 +2,14 @@
 
 import collections
 import logging
-import time
 from queue import Queue
 from threading import Event, Thread
-from typing import Callable, Optional
-
+from typing import Callable, Optional, Tuple
+from time import sleep
 import numpy as np
 import sounddevice as sd
+
+from .essential_thread import essential_thread
 
 # Default parameters
 DEFAULT_AMBIENT_DURATION_SECONDS = 1.0  # Duration to measure ambient noise
@@ -42,7 +43,7 @@ class AudioCapture:
 
     def __init__(
         self,
-        on_audio: Callable[[np.ndarray], None],
+        on_audio: Callable[[float, float, np.ndarray], None],
         device: Optional[int | str] = None,
         ambient_duration: float = DEFAULT_AMBIENT_DURATION_SECONDS,
         activity_ambient_multiplier: float = DEFAULT_ACTIVITY_AMBIENT_MULTIPLIER,
@@ -66,8 +67,8 @@ class AudioCapture:
         self._activity_threshold: float = float("inf")
         self._active_blocks_count = 0
         self._silent_blocks_count = 0
-        self._callback_blocks: Queue[np.ndarray] = Queue()
-        self._capture_blocks: collections.deque[np.ndarray] = collections.deque()
+        self._callback_blocks: Queue[Tuple[float, float, np.ndarray]] = Queue()
+        self._capture_blocks: collections.deque[Tuple[float, float, np.ndarray]] = collections.deque()
         self._stream = None
         self._stop_event = Event()
         self._callback_thread = Thread(target=self._callback_worker, daemon=True)
@@ -119,7 +120,7 @@ class AudioCapture:
             device=self._device,
         ):
             # Use Event.wait instead of time.sleep for interruptibility
-            time.sleep(self._ambient_duration)
+            sleep(self._ambient_duration)
 
         audio_floats = np.concatenate(blocks)
         self._activity_threshold = (
@@ -127,53 +128,56 @@ class AudioCapture:
         )
 
     def _callback_worker(self):
-        while not self._stop_event.is_set():
-            data = self._callback_blocks.get()
-            if data is None:
-                break  # Poison pill
-            self._on_audio(data)
-            self._callback_blocks.task_done()
+        with essential_thread():
+            while not self._stop_event.is_set():
+                data = self._callback_blocks.get()
+                if data is None:
+                    break  # Poison pill
+                start_time, end_time, audio = data
+                self._on_audio(start_time, end_time, audio)
+                self._callback_blocks.task_done()
 
     def _flush_blocks_to_callback_thread(self):
         """Flush blocks to the callback."""
-        if self._capture_blocks:
-            self._callback_blocks.put(np.concatenate(self._capture_blocks))
-            self._capture_blocks.clear()
+        for block in self._capture_blocks:
+            self._callback_blocks.put(block)
+        self._capture_blocks.clear()
 
     def _audio_callback(
-        self, indata: np.ndarray, _frames: int, _time, status: sd.CallbackFlags
+        self, indata: np.ndarray, _frames: int, time, status: sd.CallbackFlags
     ) -> None:
         """Process audio blocks for voice activity detection."""
-        if status:
-            logging.warning("Audio status: %s", status)
+        with essential_thread():
+            if status:
+                logging.warning("Audio status: %s", status)
 
-        if self._stop_event.is_set():
-            return
+            if self._stop_event.is_set():
+                return
 
-        audio_level = self._iqr_rms(indata)
-        self._capture_blocks.append(indata.copy())
+            audio_level = self._iqr_rms(indata)
+            self._capture_blocks.append((time.inputBufferAdcTime, time.inputBufferAdcTime + BLOCK_SECONDS, indata.copy()))
 
-        if audio_level >= self._activity_threshold:
-            self._silent_blocks_count = 0
-            self._active_blocks_count += 1
-            if self._active_blocks_count == ACTIVATION_BLOCKS:
-                logging.info("Detected start of speech")
-        else:
-            self._silent_blocks_count += 1
-            if self._silent_blocks_count >= DEACTIVATION_BLOCKS:
-                if self._active_blocks_count >= ACTIVATION_BLOCKS:
-                    logging.info("Detected end of speech")
+            if audio_level >= self._activity_threshold:
+                self._silent_blocks_count = 0
+                self._active_blocks_count += 1
+                if self._active_blocks_count == ACTIVATION_BLOCKS:
+                    logging.info("Detected start of speech")
+            else:
+                self._silent_blocks_count += 1
+                if self._silent_blocks_count >= DEACTIVATION_BLOCKS:
+                    if self._active_blocks_count >= ACTIVATION_BLOCKS:
+                        logging.info("Detected end of speech")
+                        self._flush_blocks_to_callback_thread()
+                    self._active_blocks_count = 0
+
+            if self._active_blocks_count >= ACTIVATION_BLOCKS:
+                if len(self._capture_blocks) > CALLBACK_BLOCKS:
+                    logging.debug("Flushing blocks to callback thread")
                     self._flush_blocks_to_callback_thread()
-                self._active_blocks_count = 0
-
-        if self._active_blocks_count >= ACTIVATION_BLOCKS:
-            if len(self._capture_blocks) > CALLBACK_BLOCKS:
-                logging.debug("Flushing blocks to callback thread")
-                self._flush_blocks_to_callback_thread()
-        else:
-            # Discard old blocks
-            while len(self._capture_blocks) > LEAD_BLOCKS + ACTIVATION_BLOCKS:
-                self._capture_blocks.popleft()
+            else:
+                # Discard old blocks
+                while len(self._capture_blocks) > LEAD_BLOCKS + ACTIVATION_BLOCKS:
+                    self._capture_blocks.popleft()
 
     def start(self):
         """Start audio capture and voice activity detection."""
