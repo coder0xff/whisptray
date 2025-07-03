@@ -34,6 +34,7 @@ class SpeechToKeys:
         activity_ambient_multiplier: float = 1.5,
         phrase_timeout: float = 3.0,
     ):
+        self._model_name = model_name
         self._phrase_timeout = phrase_timeout
         self._data_queue = Queue[Tuple[float, float, np.ndarray]]()
         self._float_samples: np.ndarray = np.array([], dtype=np.float32)
@@ -54,9 +55,7 @@ class SpeechToKeys:
             activity_ambient_multiplier=activity_ambient_multiplier,
         )
 
-        logging.info("Loading Whisper model: %s", model_name)
-        self._audio_model = whisper.load_model(model_name)
-        logging.info("Whisper model loaded successfully.")
+        self._initialize_model()
 
         audio_thread = Thread(
             target=self._loop, daemon=True, name="TranscriptionThread"
@@ -85,6 +84,16 @@ class SpeechToKeys:
             except Empty:
                 break
         logging.info("SpeechToKeys shutdown complete.")
+
+    def _initialize_model(self):
+        logging.info("Loading Whisper model: %s", self._model_name)
+        self._audio_model = whisper.load_model(self._model_name)
+        if (self._audio_model.device.type == "cpu"):
+            logging.warning("""No CUDA accelerators found. Using CPU. This will be slow.
+                            This can occur after waking from suspend. You can try
+                            restarting the NVidia driver with the following commands:\n
+                            sudo rmmod nvidia_uvm\nsudo modprobe nvidia_uvm""")
+        logging.info("Whisper model loaded successfully.")
 
     def _reset(self):
         self._float_samples = np.array([], dtype=np.float32)
@@ -208,9 +217,16 @@ class SpeechToKeys:
                 return
             
             logging.debug("Transcribing audio.")
-            result = self._audio_model.transcribe(
-                self._float_samples, fp16=torch.cuda.is_available()
-            )
+            try:
+                result = self._audio_model.transcribe(
+                    self._float_samples, fp16=torch.cuda.is_available()
+                )
+            except RuntimeError:
+                logging.error("Error transcribing audio. Reloading model.")
+                self._initialize_model()
+                result = self._audio_model.transcribe(
+                    self._float_samples, fp16=torch.cuda.is_available()
+                )
             text = result["text"]
             if self._is_first_phrase:
                 # There was no previous phrase, so remove any leading whitespace that
