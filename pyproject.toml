@@ -20,6 +20,7 @@ authors = [
   {name = "Brent Lewis", email = "coder0xff@gmail.com"},
 ]
 dependencies = [
+    "colorlog",
     "numpy",
     "openai-whisper",
     "Pillow",

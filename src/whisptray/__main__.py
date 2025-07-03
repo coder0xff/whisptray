@@ -10,6 +10,7 @@ import time
 from sys import platform
 from typing import Optional
 
+import colorlog
 from PIL import Image, ImageDraw
 
 from .alsa_error_handler import setup_alsa_error_handler, teardown_alsa_error_handler
@@ -49,19 +50,19 @@ DEFAULT_MAX_KEY_RATE = 250.0  # Default for max_key_rate
 
 def _configure_logging(verbose: bool):
     if verbose:
-        logging.basicConfig(
+        colorlog.basicConfig(
             level=logging.DEBUG,
             format=(
-                "%(asctime)s - %(levelname)s - %(name)s - %(threadName)s - %(message)s"
+                "%(asctime)s - %(log_color)s%(levelname)s%(reset)s - %(name)s - %(threadName)s - %(message)s"
             ),
             datefmt="%Y-%m-%d %H:%M:%S",
         )
         logging.info("Verbose logging enabled.")
     else:
-        logging.basicConfig(
+        colorlog.basicConfig(
             level=logging.INFO,
             format=(
-                "%(asctime)s - %(levelname)s - %(name)s - %(threadName)s - %(message)s"
+                "%(asctime)s - %(log_color)s%(levelname)s%(reset)s - %(name)s - %(threadName)s - %(message)s"
             ),
             datefmt="%Y-%m-%d %H:%M:%S",
         )
