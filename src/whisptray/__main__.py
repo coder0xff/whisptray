@@ -44,7 +44,7 @@ except ImportError:
 DEFAULT_DEVICE = None  # Sounddevice will use default device
 DEFAULT_MODEL_NAME = "turbo"
 DEFAULT_AMBIENT_DURATION = 1.0  # Default for ambient_duration
-DEFAULT_ENERGY_MULTIPLIER = 1.5  # Default for energy_threshold_multiplier
+DEFAULT_ENERGY_MULTIPLIER = 5.0  # Default for energy_threshold_multiplier
 DEFAULT_MAX_KEY_RATE = 250.0  # Default for max_key_rate
 
 
