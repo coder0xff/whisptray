@@ -53,7 +53,8 @@ def _configure_logging(verbose: bool):
         colorlog.basicConfig(
             level=logging.DEBUG,
             format=(
-                "%(asctime)s - %(log_color)s%(levelname)s%(reset)s - %(name)s - %(threadName)s - %(message)s"
+                "%(asctime)s - %(log_color)s%(levelname)s%(reset)s - %(name)s - "
+                "%(threadName)s - %(message)s"
             ),
             datefmt="%Y-%m-%d %H:%M:%S",
         )
@@ -62,7 +63,8 @@ def _configure_logging(verbose: bool):
         colorlog.basicConfig(
             level=logging.INFO,
             format=(
-                "%(asctime)s - %(log_color)s%(levelname)s%(reset)s - %(name)s - %(threadName)s - %(message)s"
+                "%(asctime)s - %(log_color)s%(levelname)s%(reset)s - %(name)s - "
+                "%(threadName)s - %(message)s"
             ),
             datefmt="%Y-%m-%d %H:%M:%S",
         )
@@ -75,7 +77,9 @@ def _configure_logging(verbose: bool):
 def _parse_args():
     parser = argparse.ArgumentParser(
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-        description="whisptray is a tool that uses your microphone to produce keyboard input.",
+        description=(
+            "whisptray is a tool that uses your microphone to produce keyboard input."
+        ),
         epilog="See https://github.com/coder0xff/whisptray for more information.",
     )
     parser.add_argument(
@@ -129,7 +133,7 @@ class WhisptrayGui:
     """
     Class to run the whisptray App.
     """
-
+    # pylint: disable=too-many-arguments,too-many-positional-arguments
     def __init__(
         self,
         device: Optional[str | int],

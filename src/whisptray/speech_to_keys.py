@@ -17,6 +17,12 @@ from .audio_capture import AudioCapture
 from .essential_thread import essential_thread
 from .rate_limited_keyboard import Controller as KeyboardController
 
+CUDA_SUCKS_MESSAGE = (
+    "NVidia driver errors occur after waking from suspend. You can"
+    " try restarting the NVidia driver with the following commands:\n"
+    " sudo rmmod nvidia_uvm\nsudo modprobe nvidia_uvm"
+)
+
 
 # pylint: disable=too-many-instance-attributes
 class SpeechToKeys:
@@ -87,12 +93,18 @@ class SpeechToKeys:
 
     def _initialize_model(self):
         logging.info("Loading Whisper model: %s", self._model_name)
-        self._audio_model = whisper.load_model(self._model_name)
-        if (self._audio_model.device.type == "cpu"):
-            logging.warning("""No CUDA accelerators found. Using CPU. This will be slow.
-                            This can occur after waking from suspend. You can try
-                            restarting the NVidia driver with the following commands:\n
-                            sudo rmmod nvidia_uvm\nsudo modprobe nvidia_uvm""")
+        try:
+            self._audio_model = whisper.load_model(self._model_name)
+        except Exception as e:
+            raise RuntimeError(
+                "Error loading Whisper model. " + CUDA_SUCKS_MESSAGE
+            ) from e
+
+        if self._audio_model.device.type == "cpu":
+            logging.warning(
+                "No CUDA accelerators found. Using CPU. This will be slow. %s",
+                CUDA_SUCKS_MESSAGE,
+            )
         logging.info("Whisper model loaded successfully.")
 
     def _reset(self):
@@ -106,7 +118,9 @@ class SpeechToKeys:
             except Empty:
                 break
 
-    def _on_audio(self, block_start_time: float, block_end_time: float, audio: np.ndarray) -> None:
+    def _on_audio(
+        self, block_start_time: float, block_end_time: float, audio: np.ndarray
+    ) -> None:
         """
         Threaded callback function to receive audio data when recordings finish.
         audio: An AudioData containing the recorded bytes.
@@ -189,11 +203,17 @@ class SpeechToKeys:
 
                 while not self._data_queue.empty():
                     try:
-                        block_start_time, block_end_time, audio = self._data_queue.get_nowait()
+                        block_start_time, block_end_time, audio = (
+                            self._data_queue.get_nowait()
+                        )
                     except Empty:
                         break
 
-                    if self._last_block_end_time is not None and block_start_time > self._last_block_end_time + self._phrase_timeout:
+                    if (
+                        self._last_block_end_time is not None
+                        and block_start_time
+                        > self._last_block_end_time + self._phrase_timeout
+                    ):
                         self._process_blocks(new_blocks, True)
 
                     self._last_block_end_time = block_end_time
@@ -215,7 +235,7 @@ class SpeechToKeys:
 
             if self._float_samples.size == 0:
                 return
-            
+
             logging.debug("Transcribing audio.")
             try:
                 result = self._audio_model.transcribe(
@@ -237,19 +257,15 @@ class SpeechToKeys:
             if self._buffer:
                 # find the first index where the text and buffer differ
                 index = next(
-                    (
-                        i
-                        for i, (t, b) in enumerate(zip(text, self._buffer))
-                        if t != b
-                    ),
+                    (i for i, (t, b) in enumerate(zip(text, self._buffer)) if t != b),
                     len(self._buffer),
                 )
-                
+
                 for _ in range(index, len(self._buffer)):
                     self._keyboard.tap(Key.backspace)
             else:
                 index = 0
-                
+
             for i in range(index, len(text)):
                 self._keyboard.type(text[i])
             self._buffer = text

@@ -1,7 +1,10 @@
+"""A context manager that causes program to exit if the thread exits unexpectedly"""
+
+import os
 from contextlib import contextmanager
 from threading import Thread
 from time import sleep
-import os
+
 
 @contextmanager
 def essential_thread():
@@ -17,5 +20,6 @@ def essential_thread():
             def exit_soon():
                 sleep(1)
                 os._exit(1)
+
             thread = Thread(target=exit_soon, daemon=True)
             thread.start()

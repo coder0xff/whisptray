@@ -1,9 +1,14 @@
-import pynput.keyboard
+"""A keyboard controller wrapper that limits the rate of key presses."""
+
 from time import sleep
 from typing import Callable
 
+import pynput.keyboard
+
 
 class Controller:
+    """A keyboard controller wrapper that limits the rate of key presses."""
+
     _delay: float
     _wrapped: pynput.keyboard.Controller
     _original_handle_method: Callable
@@ -18,7 +23,7 @@ class Controller:
         result = self._original_handle_method(key, is_press)
         sleep(self._delay)
         return result
-        
+
     def __del__(self):
         self._wrapped._handle = self._original_handle_method
 

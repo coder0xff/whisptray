@@ -4,8 +4,9 @@ import collections
 import logging
 from queue import Queue
 from threading import Event, Thread
-from typing import Callable, Optional, Tuple
 from time import sleep
+from typing import Callable, Optional, Tuple
+
 import numpy as np
 import sounddevice as sd
 
@@ -68,7 +69,9 @@ class AudioCapture:
         self._active_blocks_count = 0
         self._silent_blocks_count = 0
         self._callback_blocks: Queue[Tuple[float, float, np.ndarray]] = Queue()
-        self._capture_blocks: collections.deque[Tuple[float, float, np.ndarray]] = collections.deque()
+        self._capture_blocks: collections.deque[Tuple[float, float, np.ndarray]] = (
+            collections.deque()
+        )
         self._stream = None
         self._stop_event = Event()
         self._callback_thread = Thread(target=self._callback_worker, daemon=True)
@@ -155,7 +158,13 @@ class AudioCapture:
                 return
 
             audio_level = self._iqr_rms(indata)
-            self._capture_blocks.append((time.inputBufferAdcTime, time.inputBufferAdcTime + BLOCK_SECONDS, indata.copy()))
+            self._capture_blocks.append(
+                (
+                    time.inputBufferAdcTime,
+                    time.inputBufferAdcTime + BLOCK_SECONDS,
+                    indata.copy(),
+                )
+            )
 
             if audio_level >= self._activity_threshold:
                 self._silent_blocks_count = 0
