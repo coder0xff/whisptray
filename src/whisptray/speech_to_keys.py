@@ -18,9 +18,9 @@ from .essential_thread import essential_thread
 from .rate_limited_keyboard import Controller as KeyboardController
 
 CUDA_SUCKS_MESSAGE = (
-    "NVidia driver errors occur after waking from suspend. You can"
-    " try restarting the NVidia driver with the following commands:\n"
-    " sudo rmmod nvidia_uvm\nsudo modprobe nvidia_uvm"
+    "NVidia driver errors occur after waking from suspend. You can try restarting the"
+    " NVidia driver with the following commands:\n\n"
+    "sudo rmmod nvidia_uvm\nsudo modprobe nvidia_uvm\n\n"
 )
 
 
@@ -100,6 +100,7 @@ class SpeechToKeys:
                 "Error loading Whisper model. " + CUDA_SUCKS_MESSAGE
             ) from e
 
+        logging.info("Pytorch device type: %s", self._audio_model.device.type)
         if self._audio_model.device.type == "cpu":
             logging.warning(
                 "No CUDA accelerators found. Using CPU. This will be slow. %s",
