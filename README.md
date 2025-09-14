@@ -1,14 +1,16 @@
 # Whisptray
 
-A simple dictation program that uses OpenAI's Whisper for speech-to-text, 
-`pynput` for simulating keyboard input, and `pystray` for a system tray icon.
+A fast, accurate, and private speech-to-text dictation program.
 
-## Features
+Speak into your microphone to type text into any program on your computer. Whisptray combines the state of the art Whisper audio-to-text engine with pynput and pystray for fast, accurate, and private dictation. Whisptray is intended for Linux (major commercial OSes include dictation already,) but should work on any platform with the requisite support.
 
-- Real-time dictation using Whisper.
-- Types recognized text into the currently active application.
-- System tray icon to toggle dictation and exit the application.
-- Configurable Whisper model and audio parameters via command-line arguments.
+IMPORTANT: Your system requires the correct audio capabilities to be setup before it can use Whisptray. See the Installation section for instructions.
+
+After installation, run `whisptray`. Whisptray will create a record button, a red circle, in the corner of your screen. Dication begins when you click the record button. The record button changes into a stop button, a white square, to indicate that recording has started. Speak into your microphone, and the text will be entered into your currently active program. Click the stop button to stop dictation. You can double click the button at any time to exit Whisptray.
+
+## Recommended System Requirements
+
+Whisptray works best with a Pytorch-supported GPU.
 
 ## Installation
 
@@ -39,6 +41,8 @@ pipx install whisptray
 ```
 
 ## Usage
+
+Run:
 
 ```bash
 whisptray

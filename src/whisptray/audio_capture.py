@@ -8,7 +8,16 @@ from time import sleep
 from typing import Callable, Optional, Tuple
 
 import numpy as np
-import sounddevice as sd
+
+try:
+    import sounddevice as sd
+except OSError:
+    if "PortAudio" in str(sys.exc_info()[1]):
+        raise RuntimeError(
+            "The PortAudio library wasn't found on your system. See"
+            + " https://github.com/coder0xff/whisptray#installation for installation"
+            + " instructions.")
+    raise
 
 from .essential_thread import essential_thread
 
