@@ -34,8 +34,14 @@ CIBW_ARCHS_MACOS ?= "x86_64 arm64"
 CIBW_ARCHS_WINDOWS ?= "AMD64 ARM64"
 CIBW_BEFORE_BUILD_LINUX ?= "sh {project}/scripts/ci/install_linux_deps.sh"
 CIBW_MANYLINUX_AARCH64_IMAGE ?= "manylinux_2_28"
-# cp37-*: project requires Python 3.8+. pp3*: PyPy, skip for now. cp313-*: openai-whisper build issue. *-manylinux_i686: torch dependency not available. *-musllinux_*: torch dependency not available or script needs apk for portaudio.
-CIBW_SKIP_CONFIG ?= "cp37-* pp3* cp313-* *-manylinux_i686 *-musllinux_*"
+# Skipping the following versions:
+# cp37-*: project requires Python 3.8+.
+# pp3*: PyPy, skip for now.
+# cp313-*: openai-whisper build issue.
+# *-manylinux_i686: torch dependency not available.
+# *-musllinux_*: torch dependency not available or script needs apk for portaudio.
+# cp314-*, cp314t-*: torch dependency not available.
+CIBW_SKIP_CONFIG ?= "cp37-* pp3* cp313-* *-manylinux_i686 *-musllinux_* cp314-* cp314t-*"
 CIBW_TEST_COMMAND ?= "echo 'No tests configured for wheels yet'" # Generic test command
 CIBW_TEST_REQUIRES ?= ""
 CIBW_OUTPUT_DIR ?= wheelhouse
