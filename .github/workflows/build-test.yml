@@ -1,8 +1,6 @@
-name: Build Test on Main Branch
+name: Build Test on PR
 
 on:
-  push:
-    branches: [main]
   pull_request: # Also run on pull requests targeting main
     branches: [main]
 
