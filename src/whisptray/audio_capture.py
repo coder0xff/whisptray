@@ -2,6 +2,7 @@
 
 import collections
 import logging
+import sys
 from queue import Queue
 from threading import Event, Thread
 from time import sleep
@@ -12,7 +13,7 @@ import numpy as np
 try:
     import sounddevice as sd
 except OSError:
-    if "PortAudio" in str(sys.exc_info()[1]):
+    if all(keyword not in str(sys.exc_info()[1]) for keyword in ["PortAudio", "not found"]):
         raise RuntimeError(
             "The PortAudio library wasn't found on your system. See"
             + " https://github.com/coder0xff/whisptray#installation for installation"
