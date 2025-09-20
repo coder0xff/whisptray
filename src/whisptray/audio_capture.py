@@ -13,7 +13,7 @@ import numpy as np
 try:
     import sounddevice as sd
 except OSError:
-    if all(keyword not in str(sys.exc_info()[1]) for keyword in ["PortAudio", "not found"]):
+    if all(keyword in str(sys.exc_info()[1]) for keyword in ["PortAudio", "not found"]):
         raise RuntimeError(
             "The PortAudio library wasn't found on your system. See"
             + " https://github.com/coder0xff/whisptray#installation for installation"
