@@ -4,7 +4,7 @@ A fast, accurate, and private speech-to-text dictation program.
 
 Speak into your microphone to type text into any program on your computer. Whisptray combines the state of the art Whisper audio-to-text engine with pynput and pystray for fast, accurate, and private dictation. Whisptray is intended for Linux (major commercial OSes include dictation already,) but should work on any platform with the requisite support.
 
-IMPORTANT: Your system requires the correct audio capabilities to be setup before it can use Whisptray. See the Installation section for instructions.
+**IMPORTANT**: Your system requires the correct audio capabilities to be setup before it can use Whisptray. See the [Installation](#installation) section for instructions.
 
 After installation, run `whisptray`. Whisptray will create a record button, a red circle, in the corner of your screen. Dication begins when you click the record button. The record button changes into a stop button, a white square, to indicate that recording has started. Speak into your microphone, and the text will be entered into your currently active program. Click the stop button to stop dictation. You can double click the button at any time to exit Whisptray.
 
@@ -50,7 +50,7 @@ whisptray
 
 Click the tray icon to toggle dictation. Double click to exit.
 
-If you have an older computer, try:
+If your computer doesn't have a modern GPU, try:
 
 ```bash
 whisptray --model tiny
